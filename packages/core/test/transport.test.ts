@@ -30,7 +30,12 @@ const createMockFetch = (
 			return new Response(
 				JSON.stringify({
 					models: [
-						{ slug: "gpt-5.2", visibility: "list" },
+						{
+							slug: "gpt-5.2",
+							visibility: "list",
+							context_length: 272000,
+							max_output_limit: 128000,
+						},
 						{ slug: "gpt-5.4-mini", visibility: "list" },
 						{ slug: "codex-auto-review", visibility: "hide" },
 						{
@@ -145,6 +150,10 @@ describe("createCodexOAuthFetch", () => {
 			"gpt-5.6-sol",
 			"gpt-image-2",
 		])
+		expect(payload.data[0]).toMatchObject({
+			context_length: 272000,
+			max_output_limit: 128000,
+		})
 		expect(upstreamCalls(fetch)).toHaveLength(0)
 	})
 

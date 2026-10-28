@@ -957,10 +957,27 @@ const createCodexOAuthFetch = (
 				object: "list",
 				data: [
 					...models.map((model) => ({
+						...Object.fromEntries(
+							Object.entries(model.raw).filter(([key]) => key !== "slug"),
+						),
+						...(model.raw.context_length !== undefined ||
+						model.raw.context_window !== undefined
+							? {
+									context_length:
+										model.raw.context_length ?? model.raw.context_window,
+								}
+							: {}),
+						...(model.raw.max_output_limit !== undefined ||
+						model.raw.max_output_tokens !== undefined
+							? {
+									max_output_limit:
+										model.raw.max_output_limit ?? model.raw.max_output_tokens,
+								}
+							: {}),
 						id: model.slug,
-						object: "model",
-						created: 0,
-						owned_by: "codex-oauth",
+						object: model.raw.object ?? "model",
+						created: model.raw.created ?? 0,
+						owned_by: model.raw.owned_by ?? "codex-oauth",
 					})),
 					...(models.some((model) => model.slug === CODEX_IMAGE_MODEL)
 						? []

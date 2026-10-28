@@ -1,6 +1,8 @@
 import type { OpenAIOAuthTransport } from "@openai-oauth/core"
 
-type ModelResolver = () => Promise<string[]>
+export type OpenAIOAuthModel = Record<string, unknown> & { id: string }
+
+type ModelResolver = () => Promise<OpenAIOAuthModel[]>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
 	typeof value === "object" && value !== null && !Array.isArray(value)
@@ -24,7 +26,7 @@ const modelListError = (bodyText: string): string => {
 
 const readModelList = async (
 	client: OpenAIOAuthTransport,
-): Promise<string[]> => {
+): Promise<OpenAIOAuthModel[]> => {
 	const response = await client.request("/models")
 	const bodyText = await response.text()
 
@@ -43,24 +45,29 @@ const readModelList = async (
 		throw new Error("Codex returned a malformed models response.")
 	}
 
-	const models = uniqueStrings(
-		parsed.data
-			.map((model) => (isRecord(model) ? model.id : undefined))
-			.filter((id): id is string => typeof id === "string" && id.length > 0),
-	)
-	if (models.length === 0) {
+	const models = new Map<string, OpenAIOAuthModel>()
+	for (const value of parsed.data) {
+		if (
+			!isRecord(value) ||
+			typeof value.id !== "string" ||
+			value.id.length === 0
+		)
+			continue
+		models.set(value.id, value as OpenAIOAuthModel)
+	}
+	if (models.size === 0) {
 		throw new Error("Codex returned an empty models list.")
 	}
 
-	return models
+	return [...models.values()]
 }
 
 export const resolveOpenAIOAuthModels = async (
 	client: OpenAIOAuthTransport,
 	configuredModels: string[] | undefined,
-): Promise<string[]> =>
+): Promise<OpenAIOAuthModel[]> =>
 	Array.isArray(configuredModels) && configuredModels.length > 0
-		? uniqueStrings(configuredModels)
+		? uniqueStrings(configuredModels).map((id) => ({ id }))
 		: readModelList(client)
 
 export const createModelResolver =

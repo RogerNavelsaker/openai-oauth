@@ -64,6 +64,8 @@ type AuthReadResult = {
 	data?: AuthFile
 }
 
+const refreshes = new Map<string, Promise<EffectiveAuth>>()
+
 type RefreshOutcome = {
 	accessToken: string
 	idToken?: string
@@ -351,7 +353,8 @@ export const loadAuthTokens = async (
 		)
 	}
 
-	const readResult = await readAuthFile(resolveAuthFileCandidates(authFilePath))
+	const candidates = resolveAuthFileCandidates(authFilePath)
+	const readResult = await readAuthFile(candidates)
 	const authData = readResult.data ?? {}
 	const tokens = normalizeTokens(authData.tokens)
 
@@ -370,39 +373,96 @@ export const loadAuthTokens = async (
 		shouldRefreshAccessToken(accessToken, lastRefresh, now())
 
 	if (needsRefresh && typeof refreshToken === "string") {
-		const refreshed = await refreshChatGptTokens(
-			refreshToken,
-			clientId,
-			issuer,
-			tokenUrl,
-			fetch,
+		const lockPath = path.resolve(
+			readResult.path ?? resolveWritePath(authFilePath),
 		)
-
+		let pending = refreshes.get(lockPath)
+		if (!pending) {
+			pending = (async (): Promise<EffectiveAuth> => {
+				const latest = await readAuthFile([lockPath])
+				const latestAuth = latest.data ?? {}
+				const latestTokens = normalizeTokens(latestAuth.tokens)
+				const latestAccess = latestTokens.access_token
+				const latestRefresh = latestTokens.refresh_token
+				if (latestAccess && latestRefresh !== refreshToken) {
+					const latestAccount =
+						latestTokens.account_id ?? deriveAccountId(latestTokens.id_token)
+					if (!latestAccount)
+						throw new Error(
+							"ChatGPT account id not found in auth.json. Run `npx openai-oauth login` to sign in again.",
+						)
+					return {
+						accessToken: latestAccess,
+						accountId: latestAccount,
+						idToken: latestTokens.id_token,
+						refreshToken: latestRefresh,
+						isFedRamp:
+							deriveChatGptAccountIsFedRamp(latestTokens.id_token) ||
+							deriveChatGptAccountIsFedRamp(latestAccess),
+						sourcePath: lockPath,
+						lastRefresh: latestAuth.last_refresh,
+					}
+				}
+				const refreshed = await refreshChatGptTokens(
+					latestRefresh ?? refreshToken,
+					clientId,
+					issuer,
+					tokenUrl,
+					fetch,
+				)
+				const nextId = refreshed.idToken ?? latestTokens.id_token ?? idToken
+				const nextRefresh =
+					refreshed.refreshToken ?? latestRefresh ?? refreshToken
+				const nextAccount =
+					refreshed.accountId ??
+					latestTokens.account_id ??
+					accountId ??
+					deriveAccountId(nextId)
+				if (!nextAccount)
+					throw new Error(
+						"ChatGPT account id not found in OpenAI OAuth token response.",
+					)
+				const refreshedAt = now().toISOString()
+				await writeAuthFile(lockPath, {
+					...latestAuth,
+					auth_mode: "chatgpt",
+					tokens: {
+						id_token: nextId,
+						access_token: refreshed.accessToken,
+						refresh_token: nextRefresh,
+						account_id: nextAccount,
+					},
+					last_refresh: refreshedAt,
+				})
+				return {
+					accessToken: refreshed.accessToken,
+					accountId: nextAccount,
+					idToken: nextId,
+					refreshToken: nextRefresh,
+					isFedRamp:
+						isFedRamp ||
+						refreshed.isFedRamp === true ||
+						deriveChatGptAccountIsFedRamp(nextId) ||
+						deriveChatGptAccountIsFedRamp(refreshed.accessToken),
+					sourcePath: lockPath,
+					lastRefresh: refreshedAt,
+				}
+			})()
+			refreshes.set(lockPath, pending)
+			void pending
+				.finally(() => {
+					if (refreshes.get(lockPath) === pending) refreshes.delete(lockPath)
+				})
+				.catch(() => {})
+		}
+		const refreshed = await pending
 		accessToken = refreshed.accessToken
 		idToken = refreshed.idToken ?? idToken
 		refreshToken = refreshed.refreshToken ?? refreshToken
-		accountId = refreshed.accountId ?? accountId
-		isFedRamp =
-			isFedRamp ||
-			refreshed.isFedRamp === true ||
-			deriveChatGptAccountIsFedRamp(idToken) ||
-			deriveChatGptAccountIsFedRamp(accessToken)
-		lastRefresh = now().toISOString()
-
-		const writePath = resolveWritePath(readResult.path ?? authFilePath)
-		await writeAuthFile(writePath, {
-			...authData,
-			auth_mode: "chatgpt",
-			tokens: {
-				id_token: idToken,
-				access_token: accessToken,
-				refresh_token: refreshToken,
-				account_id: accountId,
-			},
-			last_refresh: lastRefresh,
-		})
+		accountId = refreshed.accountId
+		isFedRamp = refreshed.isFedRamp ?? isFedRamp
+		lastRefresh = refreshed.lastRefresh
 	}
-
 	if (typeof accessToken !== "string" || accessToken.length === 0) {
 		throw new Error(
 			"ChatGPT access token not found. Run `npx openai-oauth login` to sign in.",

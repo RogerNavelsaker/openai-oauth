@@ -15,6 +15,7 @@ import {
 	handleImageGenerationRequest,
 } from "./images.js"
 import { createRequestLogger } from "./logging.js"
+import type { OpenAIOAuthModel } from "./models.js"
 import { createModelResolver } from "./models.js"
 import { handleResponsesRequest } from "./responses.js"
 import {
@@ -35,7 +36,7 @@ const handleRoutes = async (
 	request: Request,
 	provider: OpenAIOAuthProvider,
 	client: OpenAIOAuthTransport,
-	resolveModels: () => Promise<string[]>,
+	resolveModels: () => Promise<OpenAIOAuthModel[]>,
 	requestLogger: ReturnType<typeof createRequestLogger>,
 ): Promise<Response> => {
 	const url = new URL(request.url)
@@ -51,11 +52,11 @@ const handleRoutes = async (
 			const models = await resolveModels()
 			return toJsonResponse({
 				object: "list",
-				data: models.map((id) => ({
-					id,
-					object: "model",
-					created: 0,
-					owned_by: "codex-oauth",
+				data: models.map((model) => ({
+					...model,
+					object: model.object ?? "model",
+					created: model.created ?? 0,
+					owned_by: model.owned_by ?? "codex-oauth",
 				})),
 			})
 		} catch (error) {
@@ -163,7 +164,7 @@ export const startOpenAIOAuthServer = async (
 		host: address.host,
 		port: address.port,
 		url: `http://${address.host}:${address.port}/v1`,
-		models,
+		models: models.map((model) => model.id),
 		close: () =>
 			new Promise<void>((resolve, reject) => {
 				server.close((error) => {
