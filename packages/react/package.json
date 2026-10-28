@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/react",
-	"version": "2.0.0",
+	"version": "2.1.0",
 	"description": "React hook and button for OpenAI OAuth sessions.",
 	"keywords": [
 		"openai",
@@ -64,11 +64,11 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/EvanZhouDev/openai-oauth.git",
+		"url": "git+https://github.com/RogerNavelsaker/openai-oauth.git",
 		"directory": "packages/react"
 	},
 	"bugs": {
-		"url": "https://github.com/EvanZhouDev/openai-oauth/issues"
+		"url": "https://github.com/RogerNavelsaker/openai-oauth/issues"
 	},
-	"homepage": "https://github.com/EvanZhouDev/openai-oauth#readme"
+	"homepage": "https://github.com/RogerNavelsaker/openai-oauth#readme"
 }

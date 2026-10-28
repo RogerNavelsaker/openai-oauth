@@ -1,6 +1,6 @@
 {
 	"name": "openai-oauth",
-	"version": "2.0.0",
+	"version": "2.1.0",
 	"description": "Free OpenAI API access with your ChatGPT account.",
 	"keywords": [
 		"openai",
@@ -60,11 +60,11 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/EvanZhouDev/openai-oauth.git",
+		"url": "git+https://github.com/RogerNavelsaker/openai-oauth.git",
 		"directory": "packages/openai-oauth"
 	},
 	"bugs": {
-		"url": "https://github.com/EvanZhouDev/openai-oauth/issues"
+		"url": "https://github.com/RogerNavelsaker/openai-oauth/issues"
 	},
-	"homepage": "https://github.com/EvanZhouDev/openai-oauth#readme"
+	"homepage": "https://github.com/RogerNavelsaker/openai-oauth#readme"
 }

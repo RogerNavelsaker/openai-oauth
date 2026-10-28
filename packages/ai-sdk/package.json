@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/ai-sdk",
-	"version": "2.0.0",
+	"version": "2.1.0",
 	"description": "Vercel AI SDK provider adapter for openai-oauth auth handles.",
 	"keywords": [
 		"openai",
@@ -61,11 +61,11 @@
 	"license": "Apache-2.0",
 	"repository": {
 		"type": "git",
-		"url": "git+https://github.com/EvanZhouDev/openai-oauth.git",
+		"url": "git+https://github.com/RogerNavelsaker/openai-oauth.git",
 		"directory": "packages/ai-sdk"
 	},
 	"bugs": {
-		"url": "https://github.com/EvanZhouDev/openai-oauth/issues"
+		"url": "https://github.com/RogerNavelsaker/openai-oauth/issues"
 	},
-	"homepage": "https://github.com/EvanZhouDev/openai-oauth#readme"
+	"homepage": "https://github.com/RogerNavelsaker/openai-oauth#readme"
 }
