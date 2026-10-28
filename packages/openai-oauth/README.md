@@ -1,6 +1,6 @@
 # openai-oauth
 
-[Docs](https://github.com/EvanZhouDev/openai-oauth#dev-proxy) | [GitHub](https://github.com/EvanZhouDev/openai-oauth) | [npm](https://www.npmjs.com/package/openai-oauth)
+[Docs](https://github.com/RogerNavelsaker/openai-oauth#dev-proxy) | [GitHub](https://github.com/RogerNavelsaker/openai-oauth) | [npm](https://www.npmjs.com/package/openai-oauth)
 
 Turn your ChatGPT account into an OpenAI-compatible local API.
 
@@ -62,4 +62,4 @@ The CLI resolves the latest published Codex client version automatically. Advanc
 
 ## More
 
-[Learn more in the openai-oauth README.](https://github.com/EvanZhouDev/openai-oauth#readme)
+[Learn more in the openai-oauth README.](https://github.com/RogerNavelsaker/openai-oauth#readme)
