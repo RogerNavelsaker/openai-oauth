@@ -20,8 +20,8 @@ describe("model discovery", () => {
 		)
 
 		await expect(resolveOpenAIOAuthModels(codex, undefined)).resolves.toEqual([
-			"gpt-5.6-sol",
-			"gpt-5.6-terra",
+			{ id: "gpt-5.6-sol", object: "model" },
+			{ id: "gpt-5.6-terra", object: "model" },
 		])
 		expect(codex.request).toHaveBeenCalledWith("/models")
 	})
@@ -31,7 +31,7 @@ describe("model discovery", () => {
 
 		await expect(
 			resolveOpenAIOAuthModels(codex, ["gpt-5.4", "gpt-5.3-codex", "gpt-5.4"]),
-		).resolves.toEqual(["gpt-5.4", "gpt-5.3-codex"])
+		).resolves.toEqual([{ id: "gpt-5.4" }, { id: "gpt-5.3-codex" }])
 		expect(codex.request).not.toHaveBeenCalled()
 	})
 })

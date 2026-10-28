@@ -318,6 +318,56 @@ describe("loadAuthTokens", () => {
 		}
 	})
 
+	test("shares one refresh across concurrent requests for the same auth file", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-race-"))
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const expiredToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) - 10,
+		})
+		let release!: () => void
+		const gate = new Promise<void>((resolve) => {
+			release = resolve
+		})
+		const fetch = vi.fn(async () => {
+			await gate
+			return Response.json({
+				access_token: "fresh-access",
+				refresh_token: "fresh-refresh",
+			})
+		})
+		try {
+			await writeAuthFile(authPath, {
+				tokens: {
+					access_token: expiredToken,
+					refresh_token: "rotating-refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			const first = loadAuthTokens({
+				authFilePath: authPath,
+				fetch,
+				now: () => now,
+			})
+			const second = loadAuthTokens({
+				authFilePath: authPath,
+				fetch,
+				now: () => now,
+			})
+			release()
+			const results = await Promise.all([first, second])
+			expect(fetch).toHaveBeenCalledTimes(1)
+			expect(results.map((result) => result.accessToken)).toEqual([
+				"fresh-access",
+				"fresh-access",
+			])
+		} finally {
+			release()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	test("uses an explicit token url override when refreshing", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-token-url-"))
 		const authPath = path.join(root, "auth.json")

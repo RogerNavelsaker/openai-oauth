@@ -41,7 +41,7 @@ describe("openai oauth server", () => {
 		)
 
 		expect(response.status).toBe(200)
-		await expect(response.json()).resolves.toEqual({
+		await expect(response.json()).resolves.toMatchObject({
 			object: "list",
 			data: [
 				{
@@ -72,7 +72,11 @@ describe("openai oauth server", () => {
 			return new Response(
 				JSON.stringify({
 					models: [
-						{ slug: "gpt-5.2" },
+						{
+							slug: "gpt-5.2",
+							context_length: 272000,
+							max_output_limit: 128000,
+						},
 						{ slug: "gpt-5.1-codex" },
 						{ slug: "gpt-5.2" },
 					],
@@ -105,7 +109,7 @@ describe("openai oauth server", () => {
 				),
 			),
 		).toBe(true)
-		await expect(response.json()).resolves.toEqual({
+		await expect(response.json()).resolves.toMatchObject({
 			object: "list",
 			data: [
 				{
@@ -133,6 +137,43 @@ describe("openai oauth server", () => {
 			recursive: true,
 			force: true,
 		})
+	})
+
+	test("passes through upstream model limits", async () => {
+		const authFilePath = await createAuthFile()
+		const fetch = vi.fn(async (input: RequestInfo | URL) => {
+			if (String(input) === "https://registry.npmjs.org/@openai/codex/latest") {
+				return Response.json({ version: "0.144.1" })
+			}
+			return Response.json({
+				models: [
+					{
+						slug: "gpt-6-luna",
+						visibility: "list",
+						supported_in_api: true,
+						context_length: 272000,
+						max_output_limit: 128000,
+					},
+				],
+			})
+		})
+		const handler = createOpenAIOAuthFetchHandler({
+			authFilePath,
+			ensureFresh: false,
+			fetch,
+		})
+		const response = await handler(new Request("http://localhost/v1/models"))
+		expect(response.status).toBe(200)
+		await expect(response.json()).resolves.toMatchObject({
+			data: expect.arrayContaining([
+				expect.objectContaining({
+					id: "gpt-6-luna",
+					context_length: 272000,
+					max_output_limit: 128000,
+				}),
+			]),
+		})
+		await fs.rm(path.dirname(authFilePath), { recursive: true, force: true })
 	})
 
 	test("returns an upstream error when codex model discovery fails", async () => {
