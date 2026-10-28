@@ -44,18 +44,18 @@
 		"ai": "^6.0.116"
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "3.0.41",
-		"@ai-sdk/provider": "3.0.8",
-		"@ai-sdk/provider-utils": "4.0.19",
+		"@ai-sdk/openai": "3.0.134",
+		"@ai-sdk/provider": "3.0.19",
+		"@ai-sdk/provider-utils": "4.0.62",
 		"@openai-oauth/core": "workspace:*"
 	},
 	"devDependencies": {
 		"@openai-oauth/local": "workspace:*",
 		"@types/node": "20.17.24",
-		"ai": "6.0.116",
+		"ai": "6.0.317",
 		"typescript": "5.9.2",
-		"vitest": "4.1.10",
-		"zod": "^3.25.76"
+		"vitest": "4.1.12",
+		"zod": "^4.6.6"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

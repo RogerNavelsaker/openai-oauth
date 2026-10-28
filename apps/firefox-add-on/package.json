@@ -12,6 +12,6 @@
 		"test": "bun test"
 	},
 	"devDependencies": {
-		"web-ext": "^10.5.0"
+		"web-ext": "^10.8.0"
 	}
 }
