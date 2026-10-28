@@ -17,11 +17,9 @@
 		"typecheck": "turbo run typecheck",
 		"test": "turbo run test",
 		"check:browser": "bun scripts/check-browser-bundles.mjs && bun run turbo run build --filter=@openai-oauth/firefox-add-on && bun run --cwd apps/firefox-add-on lint:add-on",
-		"check:release": "bun scripts/check-release.mjs",
+		"check:artifacts": "bun scripts/check-artifacts.mjs",
 		"format-and-lint": "biome check .",
-		"format-and-lint:fix": "biome check . --write",
-		"publish:packages": "bun scripts/publish-packages.mjs",
-		"publish:dry-run": "bun scripts/publish-packages.mjs --dry-run"
+		"format-and-lint:fix": "biome check . --write"
 	},
 	"devDependencies": {
 		"@biomejs/biome": "2.3.10",

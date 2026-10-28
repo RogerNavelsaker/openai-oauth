@@ -46,8 +46,8 @@ jobs:
       - name: Build
         run: bun run build
 
-      - name: Check release artifacts
-        run: bun run check:release
+      - name: Check workspace artifacts
+        run: bun run check:artifacts
 
       - name: Audit dependencies
         run: bun audit

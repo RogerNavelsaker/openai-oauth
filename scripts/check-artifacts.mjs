@@ -22,7 +22,7 @@ const packages = packageDirs.map((directory) => ({
 const versions = new Set(packages.map(({ metadata }) => metadata.version))
 if (versions.size !== 1) {
 	throw new Error(
-		`Publishable package versions differ: ${[...versions].join(", ")}`,
+		`Workspace package versions differ: ${[...versions].join(", ")}`,
 	)
 }
 
@@ -54,4 +54,4 @@ for (const { directory, metadata } of packages) {
 	}
 }
 
-console.log(`Release packages are ready at ${[...versions][0]}.`)
+console.log(`Workspace package artifacts are ready at ${[...versions][0]}.`)
