@@ -45,16 +45,16 @@
 		"@openai-oauth/ai-sdk": "workspace:*",
 		"@openai-oauth/core": "workspace:*",
 		"@openai-oauth/local": "workspace:*",
-		"ai": "6.0.116",
+		"ai": "6.0.317",
 		"yargs": "17.7.3"
 	},
 	"devDependencies": {
-		"@ai-sdk/openai": "3.0.41",
+		"@ai-sdk/openai": "3.0.134",
 		"@types/node": "20.17.24",
 		"@types/yargs": "^17.0.33",
 		"typescript": "5.9.2",
-		"vitest": "4.1.10",
-		"zod": "^3.25.76"
+		"vitest": "4.1.12",
+		"zod": "^4.6.6"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

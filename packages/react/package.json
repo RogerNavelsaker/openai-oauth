@@ -54,11 +54,11 @@
 	"devDependencies": {
 		"@types/react": "^19.0.0",
 		"@types/react-dom": "^19.2.3",
-		"happy-dom": "20.10.6",
+		"happy-dom": "21.0.4",
 		"react": "^19.0.0",
 		"react-dom": "^19.2.3",
 		"typescript": "5.9.2",
-		"vitest": "4.1.10"
+		"vitest": "4.1.12"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

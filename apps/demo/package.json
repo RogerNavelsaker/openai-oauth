@@ -10,12 +10,12 @@
 		"typecheck": "tsc --noEmit"
 	},
 	"dependencies": {
-		"@ai-sdk/react": "3.0.118",
+		"@ai-sdk/react": "3.0.320",
 		"@openai-oauth/ai-sdk": "workspace:*",
 		"@openai-oauth/react": "workspace:*",
 		"@vercel/analytics": "^2.0.1",
-		"ai": "6.0.116",
-		"next": "16.2.10",
+		"ai": "6.0.317",
+		"next": "16.4.3",
 		"react": "^19.2.3",
 		"react-dom": "^19.2.3"
 	},
