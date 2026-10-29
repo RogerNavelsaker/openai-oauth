@@ -451,7 +451,8 @@ describe("loadAuthTokens", () => {
 		const expiredToken = createJwt({
 			exp: Math.floor(now.getTime() / 1000) - 10,
 		})
-		const responseSecret = "response-secret-do-not-log"
+		const responseDetail =
+			"Refresh token rejected for alice@example.com; access_token=server-secret-do-not-log; device code: AB12-CD34"
 		const refreshSecret = "refresh-token-do-not-log"
 		const events: Array<Record<string, unknown>> = []
 
@@ -472,7 +473,7 @@ describe("loadAuthTokens", () => {
 						Response.json(
 							{
 								error: "invalid_grant",
-								error_description: responseSecret,
+								error_description: responseDetail,
 							},
 							{ status: 401 },
 						),
@@ -486,8 +487,14 @@ describe("loadAuthTokens", () => {
 				type: "token_refresh_failed",
 				status: 401,
 				oauthErrorCode: "invalid_grant",
+				responseContentType: "application/json",
+				responseBodyBytes: expect.any(Number),
+				errorDescription:
+					"Refresh token rejected for [redacted email]; access_token=[redacted]; device code=[redacted]",
 			})
-			expect(JSON.stringify(events)).not.toContain(responseSecret)
+			expect(JSON.stringify(events)).not.toContain("alice@example.com")
+			expect(JSON.stringify(events)).not.toContain("server-secret-do-not-log")
+			expect(JSON.stringify(events)).not.toContain("AB12-CD34")
 			expect(JSON.stringify(events)).not.toContain(refreshSecret)
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })

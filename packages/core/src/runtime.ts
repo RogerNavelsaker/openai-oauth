@@ -18,6 +18,28 @@ const DEFAULT_CODEX_INSTRUCTIONS = ""
 const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000
 const MODEL_CATALOG_FAILURE_TTL_MS = 60 * 1000
 const RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+const redactOAuthErrorDescription = (value: string): string =>
+	value
+		.replace(/\bBearer\s+[^\s,;]+/gi, "Bearer [redacted]")
+		.replace(
+			/(\b(?:device|verification|user) code)\s*[:=]?\s*[A-Za-z0-9-]{6,16}\b/gi,
+			"$1=[redacted]",
+		)
+		.replace(
+			/([?&](?:access_token|refresh_token|id_token|client_secret|code|state)=)[^&#\s]*/gi,
+			"$1[redacted]",
+		)
+		.replace(
+			/\b(access_token|refresh_token|id_token|client_secret|device_auth_id|user_code|authorization_code|code_verifier)\b\s*[:=]\s*["']?[^\s,;"']+/gi,
+			"$1=[redacted]",
+		)
+		.replace(/\beyJ[\w-]*\.[\w-]+\.[\w-]+\b/g, "[redacted JWT]")
+		.replace(/\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/g, "[redacted email]")
+		.replace(/\b[A-Za-z0-9_-]{32,}\b/g, "[redacted value]")
+		.replace(/[\r\n\t]+/g, " ")
+		.replace(/\s+/g, " ")
+		.trim()
+		.slice(0, 240)
 const OAUTH_ERROR_CODES = new Set([
 	"access_denied",
 	"account_selection_required",
@@ -364,6 +386,7 @@ const requestOpenAIOAuthTokens = async (options: {
 	if (!response.ok) {
 		let detail = ""
 		let oauthErrorCode: string | undefined
+		let oauthErrorDescription: string | undefined
 		try {
 			const parsed = JSON.parse(bodyText)
 			if (isRecord(parsed)) {
@@ -378,17 +401,40 @@ const requestOpenAIOAuthTokens = async (options: {
 					oauthErrorCode = code
 				}
 				const message =
-					parsed.error_description ?? parsed.message ?? parsed.detail
+					parsed.error_description ??
+					parsed.message ??
+					parsed.detail ??
+					(isRecord(oauthError)
+						? (oauthError.message ?? oauthError.description)
+						: undefined)
 				if (typeof message === "string") {
 					detail = ` ${message}`
+					oauthErrorDescription = redactOAuthErrorDescription(message)
 				}
 			}
 		} catch {}
+		const contentType = response.headers
+			.get("content-type")
+			?.split(";", 1)[0]
+			?.trim()
+			.toLowerCase()
 		const error = new Error(
 			`OpenAI OAuth token request failed with HTTP ${response.status}.${detail}`,
-		) as Error & { oauthErrorCode?: string; status: number }
+		) as Error & {
+			oauthErrorCode?: string
+			oauthErrorDescription?: string
+			responseBodyBytes: number
+			responseContentType?: string
+			status: number
+		}
 		error.status = response.status
+		error.responseBodyBytes = new TextEncoder().encode(bodyText).byteLength
+		if (contentType && /^[a-z0-9.+-]+\/[a-z0-9.+-]+$/.test(contentType)) {
+			error.responseContentType = contentType
+		}
 		if (oauthErrorCode) error.oauthErrorCode = oauthErrorCode
+		if (oauthErrorDescription)
+			error.oauthErrorDescription = oauthErrorDescription
 		throw error
 	}
 

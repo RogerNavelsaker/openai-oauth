@@ -236,7 +236,8 @@ describe("openai oauth server", () => {
 				Response.json(
 					{
 						error: "invalid_grant",
-						error_description: "private response body",
+						error_description:
+							"Refresh token rejected for alice@example.com; access_token=provider-secret-do-not-log; device code: AB12-CD34",
 					},
 					{ status: 401 },
 				),
@@ -259,10 +260,18 @@ describe("openai oauth server", () => {
 					type: "token_refresh_failed",
 					status: 401,
 					oauthErrorCode: "invalid_grant",
+					responseContentType: "application/json",
+					responseBodyBytes: expect.any(Number),
+					errorDescription:
+						"Refresh token rejected for [redacted email]; access_token=[redacted]; device code=[redacted]",
 				},
 			])
 			expect(JSON.stringify(entries)).not.toContain("refresh-secret")
-			expect(JSON.stringify(entries)).not.toContain("private response body")
+			expect(JSON.stringify(entries)).not.toContain("alice@example.com")
+			expect(JSON.stringify(entries)).not.toContain(
+				"provider-secret-do-not-log",
+			)
+			expect(JSON.stringify(entries)).not.toContain("AB12-CD34")
 		} finally {
 			await fs.rm(path.dirname(authFilePath), { recursive: true, force: true })
 		}

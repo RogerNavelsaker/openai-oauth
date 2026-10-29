@@ -47,6 +47,9 @@ type TokenRefreshLogEvent =
 			errorName: string
 			status?: number
 			oauthErrorCode?: string
+			errorDescription?: string
+			responseBodyBytes?: number
+			responseContentType?: string
 	  }
 
 export type AuthLoaderOptions = {
@@ -487,6 +490,9 @@ export const loadAuthTokens = async (
 							? details.status
 							: undefined
 					const code = details.oauthErrorCode
+					const errorDescription = details.oauthErrorDescription
+					const responseBodyBytes = details.responseBodyBytes
+					const responseContentType = details.responseContentType
 					emitTokenRefreshLog(onTokenRefreshLog, {
 						type: "token_refresh_failed",
 						durationMs: Date.now() - startedAt,
@@ -498,6 +504,15 @@ export const loadAuthTokens = async (
 						...(typeof code === "string" &&
 						/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(code)
 							? { oauthErrorCode: code }
+							: {}),
+						...(typeof errorDescription === "string"
+							? { errorDescription }
+							: {}),
+						...(typeof responseBodyBytes === "number"
+							? { responseBodyBytes }
+							: {}),
+						...(typeof responseContentType === "string"
+							? { responseContentType }
 							: {}),
 					})
 					throw error
