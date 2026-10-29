@@ -43,7 +43,7 @@
 		"@openai-oauth/core": "workspace:*"
 	},
 	"devDependencies": {
-		"openai": "6.46.0",
+		"openai": "7.45.1",
 		"typescript": "5.9.2",
 		"vitest": "4.1.12"
 	},
