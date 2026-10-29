@@ -52,11 +52,12 @@ Common flags:
 | Model allowlist | `--models` | Account-specific Codex models discovered from ChatGPT |
 | Auth file path | `--oauth-file` | `$CODEX_HOME/auth.json` or `~/.codex/auth.json` |
 | Open browser | `--open` / `--no-open` | `--open` |
-| Login timeout | `--login-timeout-ms` | `300000` |
+| Device-code authentication | `--device-auth` | Off for CLI; on in OCI image |
+| Login timeout | `--login-timeout-ms` | Browser: `300000`; device-code: `900000` |
 
 Binding `--host` beyond loopback exposes the proxy to your network. Anyone who can reach that port can make requests with your ChatGPT account.
 
-Login listens on loopback and uses `http://localhost:1455/auth/callback`, the local callback URL accepted by OpenAI OAuth.
+The default browser login listens on loopback and uses `http://localhost:1455/auth/callback`. Use `openai-oauth login --device-auth` on remote or headless hosts; it prints a one-time code and waits for approval without opening a callback port. The OCI image enables this mode automatically when credentials are missing or a startup refresh is rejected with HTTP 401. If the auth server returns HTTP 404, device-code login is disabled; authenticate on a browser-capable host and provide its `auth.json` instead.
 
 The CLI resolves the latest published Codex client version automatically. Advanced flags also exist for overriding it, the upstream Codex base URL, OAuth client id, and OAuth token URL.
 

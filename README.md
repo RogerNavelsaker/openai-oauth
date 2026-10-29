@@ -183,7 +183,17 @@ You can always directly sign in (without starting the server):
 npx openai-oauth login
 ```
 
-Login listens on loopback and uses `http://localhost:1455/auth/callback`, the local callback URL accepted by OpenAI OAuth.
+The default browser login listens on loopback and uses `http://localhost:1455/auth/callback`. For a remote or headless host, use device-code login instead:
+
+```bash
+npx openai-oauth login --device-auth
+```
+
+It prints a one-time code and verification URL, then waits for approval. OpenAI may disable device-code login for a particular auth server; if it returns HTTP 404, run the browser login on a machine with a browser and provide that machine's `auth.json` to the server.
+
+### OCI image login
+
+The OCI image starts with `--device-auth`. If credentials are missing, or a startup refresh is rejected with HTTP 401, it prints the device URL and code to the container logs and waits. The API server starts only after login succeeds. Follow the container or service logs to retrieve the code; the login code is one-time and anyone with access to those logs can use it while it is valid. A transient network/server error does not initiate a new login.
 
 The CLI also supports a few configuration options that generally do not need to be edited.
 
@@ -255,10 +265,16 @@ The CLI also supports a few configuration options that generally do not need to 
 	  <td>Open the login URL in a browser during <code>npx openai-oauth login</code>. Use <code>--no-open</code> to print the URL instead.</td>
     </tr>
     <tr>
+      <td>Device-code authentication</td>
+      <td><code>--device-auth</code></td>
+      <td>Off for CLI; on in the OCI image</td>
+      <td>Use headless device-code login. In server mode, wait for credentials when missing and retry once after an HTTP 401 token refresh rejection.</td>
+    </tr>
+    <tr>
       <td>Login timeout</td>
       <td><code>--login-timeout-ms</code></td>
-      <td><code>300000</code></td>
-      <td>How long the login command waits for the OAuth callback, in milliseconds.</td>
+      <td>Browser: <code>300000</code>; device-code: <code>900000</code></td>
+      <td>How long the login command waits for the OAuth callback or device approval, in milliseconds.</td>
     </tr>
   </tbody>
 </table>

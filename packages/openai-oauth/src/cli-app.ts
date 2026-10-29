@@ -26,7 +26,7 @@ import {
 	stopCliRuntime,
 } from "./cli-runtime.js"
 import { runCliWorker } from "./cli-worker.js"
-import { runOpenAIOAuthLogin } from "./login.js"
+import { runOpenAIOAuthDeviceCodeLogin, runOpenAIOAuthLogin } from "./login.js"
 import { DEFAULT_PORT } from "./shared.js"
 import { checkForOpenAIOAuthUpdates } from "./update-check.js"
 import { packageVersion } from "./version.js"
@@ -44,6 +44,7 @@ export type CliArgs = {
 	tokenUrl?: string
 	authFilePath?: string
 	openBrowser?: boolean
+	deviceAuth?: boolean
 	loginTimeoutMs?: number
 	detach?: boolean
 	follow?: boolean
@@ -85,7 +86,7 @@ const helpLines = [
 	`  ${cliCommand} login [options]`,
 	"",
 	"Options",
-	"  --host <host>              Proxy host. Login callback always listens on loopback.",
+	"  --host <host>              Proxy host. Browser login callback listens on loopback.",
 	"  --port <port>              Proxy port. Default: 10531.",
 	"  --models <ids>             Comma-separated model ids to expose from /v1/models.",
 	"  --codex-version <version>  Override the Codex client version used for model discovery.",
@@ -94,7 +95,8 @@ const helpLines = [
 	"  --oauth-token-url <url>    Override the OAuth token URL used for refresh.",
 	"  --oauth-file <path>        Path to the local auth.json file.",
 	"  --no-open                  Print the login URL without opening a browser.",
-	"  --login-timeout-ms <ms>    Login timeout. Default: 300000",
+	"  --device-auth              Use device-code login and wait for credentials.",
+	"  --login-timeout-ms <ms>    Browser default: 300000; device-code: 900000.",
 	"",
 	"Flags",
 	"  -d, --detach               Run in the background",
@@ -104,6 +106,7 @@ const helpLines = [
 	"",
 	"Notes",
 	"  If no auth file is found, run: npx openai-oauth login",
+	"  Container images use --device-auth to wait for missing or rejected credentials.",
 	"  By default, the latest Codex version and available account models are discovered automatically.",
 ]
 
@@ -115,7 +118,7 @@ const createCliParser = (argv: string[]) =>
 		.version(false)
 		.option("host", {
 			type: "string",
-			describe: "Proxy host. Login callback always listens on loopback.",
+			describe: "Proxy host. Browser login callback listens on loopback.",
 		})
 		.option("port", {
 			type: "number",
@@ -149,11 +152,17 @@ const createCliParser = (argv: string[]) =>
 		.option("open", {
 			type: "boolean",
 			default: true,
-			describe: "Open the login URL in a browser.",
+			describe: "Open the browser-login URL.",
+		})
+		.option("device-auth", {
+			type: "boolean",
+			default: false,
+			describe: "Use device-code login when credentials are needed.",
 		})
 		.option("login-timeout-ms", {
 			type: "number",
-			describe: "Login timeout in milliseconds. Default: 300000",
+			describe:
+				"Login timeout in milliseconds. Defaults: browser 300000, device-code 900000.",
 		})
 		.option("detach", {
 			alias: "d",
@@ -215,6 +224,7 @@ export const parseCliArgs = (argv: string[]): CliArgs => {
 		tokenUrl: parsed.oauthTokenUrl,
 		authFilePath: parsed.oauthFile,
 		openBrowser: parsed.open,
+		deviceAuth: parsed.deviceAuth,
 		loginTimeoutMs: parsed.loginTimeoutMs,
 		detach: parsed.detach,
 		follow: parsed.follow,
@@ -238,6 +248,7 @@ export const toLoginOptions = (args: CliArgs) => ({
 	tokenUrl: args.tokenUrl,
 	authFilePath: args.authFilePath,
 	openBrowser: args.openBrowser,
+	deviceAuth: args.deviceAuth,
 	timeoutMs: args.loginTimeoutMs,
 })
 
@@ -370,13 +381,21 @@ const createLoginCancellation = (): LoginCancellation => {
 const isLoginCancelledError = (error: unknown): boolean =>
 	error instanceof Error && error.message === "OpenAI OAuth login cancelled."
 
+const isRejectedOAuthRefresh = (error: unknown): boolean =>
+	error instanceof Error &&
+	/^OpenAI OAuth token request failed with HTTP 401\./.test(error.message)
+
 const runLoginWithCancellation = async (
 	options: ReturnType<typeof toLoginOptions>,
 ): Promise<boolean> => {
 	const cancellation = createLoginCancellation()
+	const { deviceAuth, ...loginOptions } = options
+	const runLogin = deviceAuth
+		? runOpenAIOAuthDeviceCodeLogin
+		: runOpenAIOAuthLogin
 	try {
-		await runOpenAIOAuthLogin({
-			...options,
+		await runLogin({
+			...loginOptions,
 			signal: cancellation.signal,
 		})
 		return true
@@ -695,26 +714,43 @@ export const runCli = async (argv: string[] = hideBin(process.argv)) => {
 	const existingAuthFile = await findExistingAuthFile(options.authFilePath)
 	if (!existingAuthFile) {
 		await updateCheck
-		if (!canPrompt()) {
-			throw new Error(toMissingAuthFileMessage(options.authFilePath))
-		}
+		if (args.deviceAuth) {
+			if (!(await runLoginWithCancellation(toLoginOptions(args)))) {
+				return
+			}
+		} else {
+			if (!canPrompt()) {
+				throw new Error(toMissingAuthFileMessage(options.authFilePath))
+			}
 
-		const shouldLogin = await confirm(
-			toMissingAuthFilePrompt(options.authFilePath),
-			true,
-		)
-		if (!shouldLogin) {
-			console.log("Login cancelled.")
-			return
-		}
+			const shouldLogin = await confirm(
+				toMissingAuthFilePrompt(options.authFilePath),
+				true,
+			)
+			if (!shouldLogin) {
+				console.log("Login cancelled.")
+				return
+			}
 
-		const didLogin = await runLoginWithCancellation(toLoginOptions(args))
-		if (!didLogin) {
-			return
+			const didLogin = await runLoginWithCancellation(toLoginOptions(args))
+			if (!didLogin) {
+				return
+			}
 		}
 	}
 
-	const worker = await startCliWorker(argv)
+	let worker: ManagedCliWorker
+	try {
+		worker = await startCliWorker(argv)
+	} catch (error) {
+		if (!args.deviceAuth || !isRejectedOAuthRefresh(error)) {
+			throw error
+		}
+		if (!(await runLoginWithCancellation(toLoginOptions(args)))) {
+			return
+		}
+		worker = await startCliWorker(argv)
+	}
 	await updateCheck
 	if (args.detach) {
 		await worker.detach()

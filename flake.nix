@@ -125,7 +125,7 @@
           User = "10001:10001";
           WorkingDir = "/data";
           Entrypoint = [ "${openaiOauthEntrypoint}/bin/openai-oauth-entrypoint" ];
-          Cmd = [ "--host" "0.0.0.0" "--port" "10531" ];
+          Cmd = [ "--device-auth" "--host" "0.0.0.0" "--port" "10531" ];
           Env = [ "HOME=/data" "CODEX_HOME=/data" "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
           Volumes = { "/data" = { }; };
           StopSignal = "SIGTERM";

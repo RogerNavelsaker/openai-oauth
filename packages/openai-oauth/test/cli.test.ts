@@ -161,6 +161,16 @@ describe("openai oauth cli", () => {
 		})
 	})
 
+	test("parses device-code authentication for serve and login", () => {
+		const serve = parseCliArgs(["--device-auth"])
+		expect(serve).toMatchObject({ command: "serve", deviceAuth: true })
+		expect(toLoginOptions(serve)).toMatchObject({ deviceAuth: true })
+
+		const login = parseCliArgs(["login", "--device-auth"])
+		expect(login).toMatchObject({ command: "login", deviceAuth: true })
+		expect(toHelpMessage()).toContain("--device-auth")
+	})
+
 	test("parses logs command follow flags", () => {
 		expect(parseCliArgs(["logs"])).toMatchObject({
 			command: "logs",
