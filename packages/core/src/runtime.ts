@@ -30,7 +30,7 @@ const redactOAuthErrorDescription = (value: string): string =>
 			"$1[redacted]",
 		)
 		.replace(
-			/\b(access_token|refresh_token|id_token|client_secret|device_auth_id|user_code|authorization_code|code_verifier)\b\s*[:=]\s*["']?[^\s,;"']+/gi,
+			/\b(access_token|refresh_token|id_token|client_secret|device_auth_id|device_code|user_code|authorization_code|code_verifier)\b\s*[:=]\s*["']?[^\s,;"']+/gi,
 			"$1=[redacted]",
 		)
 		.replace(/\beyJ[\w-]*\.[\w-]+\.[\w-]+\b/g, "[redacted JWT]")
@@ -425,6 +425,7 @@ const requestOpenAIOAuthTokens = async (options: {
 			oauthErrorDescription?: string
 			responseBodyBytes: number
 			responseContentType?: string
+			oauthRequestId?: string
 			status: number
 		}
 		error.status = response.status
@@ -435,6 +436,11 @@ const requestOpenAIOAuthTokens = async (options: {
 		if (oauthErrorCode) error.oauthErrorCode = oauthErrorCode
 		if (oauthErrorDescription)
 			error.oauthErrorDescription = oauthErrorDescription
+		const requestId =
+			response.headers.get("x-request-id") ?? response.headers.get("request-id")
+		if (requestId && /^[A-Za-z0-9._:-]{1,128}$/.test(requestId)) {
+			error.oauthRequestId = requestId
+		}
 		throw error
 	}
 

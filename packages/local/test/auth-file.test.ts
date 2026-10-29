@@ -10,6 +10,7 @@ import {
 	parseJwtClaims,
 	refreshOpenAIOAuthTokens,
 } from "@openai-oauth/core"
+import lockfile from "proper-lockfile"
 import { describe, expect, test, vi } from "vitest"
 import { loadAuthTokens, saveAuthTokens } from "../src/auth-file.js"
 
@@ -368,6 +369,138 @@ describe("loadAuthTokens", () => {
 		}
 	})
 
+	test("re-reads credentials under a file lock before refreshing", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-lock-"))
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const freshAccessToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) + 10 * 24 * 60 * 60,
+		})
+		let releaseFetch!: () => void
+		const fetchGate = new Promise<void>((resolve) => {
+			releaseFetch = resolve
+		})
+		const fetch = vi.fn(async () => {
+			await fetchGate
+			return Response.json({
+				access_token: "unexpected-access",
+				refresh_token: "shared-refresh",
+			})
+		})
+		const lockSpy = vi.spyOn(lockfile, "lock")
+		let releaseFileLock: (() => Promise<void>) | undefined
+		let pending: ReturnType<typeof loadAuthTokens> | undefined
+
+		try {
+			await writeAuthFile(authPath, {
+				tokens: {
+					access_token: createJwt({
+						exp: Math.floor(now.getTime() / 1000) - 10,
+					}),
+					refresh_token: "shared-refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			releaseFileLock = await lockfile.lock(authPath, { realpath: false })
+			pending = loadAuthTokens({
+				authFilePath: authPath,
+				fetch,
+				now: () => now,
+			})
+			await vi.waitFor(() => expect(lockSpy).toHaveBeenCalledTimes(2))
+			expect(fetch).not.toHaveBeenCalled()
+
+			await writeAuthFile(authPath, {
+				tokens: {
+					access_token: freshAccessToken,
+					refresh_token: "shared-refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: now.toISOString(),
+			})
+			await releaseFileLock()
+			releaseFileLock = undefined
+			releaseFetch()
+			const result = await pending
+
+			expect(result.accessToken).toBe(freshAccessToken)
+			expect(fetch).not.toHaveBeenCalled()
+		} finally {
+			releaseFetch()
+			if (releaseFileLock) await releaseFileLock()
+			if (pending) await pending.catch(() => {})
+			lockSpy.mockRestore()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
+	test("uses the latest refresh token and preserves concurrent auth updates", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-merge-"))
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const expiredToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) - 10,
+		})
+		const fetch = vi.fn(async () =>
+			Response.json({
+				access_token: "fresh-access",
+				refresh_token: "new-refresh",
+			}),
+		)
+		const lockSpy = vi.spyOn(lockfile, "lock")
+		let releaseFileLock: (() => Promise<void>) | undefined
+		let pending: ReturnType<typeof loadAuthTokens> | undefined
+
+		try {
+			await writeAuthFile(authPath, {
+				custom_metadata: "before",
+				tokens: {
+					access_token: expiredToken,
+					refresh_token: "stale-refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			releaseFileLock = await lockfile.lock(authPath, { realpath: false })
+			pending = loadAuthTokens({
+				authFilePath: authPath,
+				fetch,
+				now: () => now,
+			})
+			await vi.waitFor(() => expect(lockSpy).toHaveBeenCalledTimes(2))
+
+			await writeAuthFile(authPath, {
+				custom_metadata: "latest",
+				tokens: {
+					access_token: expiredToken,
+					refresh_token: "latest-refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			await releaseFileLock()
+			releaseFileLock = undefined
+			const result = await pending
+
+			expect(result.accessToken).toBe("fresh-access")
+			expect(fetch).toHaveBeenCalledWith(
+				"https://auth.openai.com/oauth/token",
+				expect.objectContaining({
+					body: expect.stringContaining('"refresh_token":"latest-refresh"'),
+				}),
+			)
+			const stored = JSON.parse(await fs.readFile(authPath, "utf-8"))
+			expect(stored.custom_metadata).toBe("latest")
+			expect(stored.tokens.refresh_token).toBe("new-refresh")
+		} finally {
+			if (releaseFileLock) await releaseFileLock()
+			if (pending) await pending.catch(() => {})
+			lockSpy.mockRestore()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	test("uses an explicit token url override when refreshing", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-token-url-"))
 		const authPath = path.join(root, "auth.json")
@@ -444,26 +577,26 @@ describe("loadAuthTokens", () => {
 		}
 	})
 
-	test("logs failed refresh status and OAuth error code without response details", async () => {
+	test("logs refresh trigger and upstream diagnostics without exposing secrets", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-log-"))
 		const authPath = path.join(root, "auth.json")
 		const now = new Date("2025-01-01T00:00:00Z")
-		const expiredToken = createJwt({
-			exp: Math.floor(now.getTime() / 1000) - 10,
+		const accessToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) + 10 * 24 * 60 * 60,
 		})
 		const responseDetail =
-			"Refresh token rejected for alice@example.com; access_token=server-secret-do-not-log; device code: AB12-CD34"
+			"Refresh token rejected for alice@example.com; access_token=server-secret-do-not-log; device code: AB12-CD34; device_code=hidden-device-code"
 		const refreshSecret = "refresh-token-do-not-log"
 		const events: Array<Record<string, unknown>> = []
 
 		try {
 			await writeAuthFile(authPath, {
 				tokens: {
-					access_token: expiredToken,
+					access_token: accessToken,
 					refresh_token: refreshSecret,
 					account_id: "acct-1",
 				},
-				last_refresh: "2020-01-01T00:00:00Z",
+				last_refresh: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
 			})
 
 			await expect(
@@ -475,26 +608,39 @@ describe("loadAuthTokens", () => {
 								error: "invalid_grant",
 								error_description: responseDetail,
 							},
-							{ status: 401 },
+							{
+								status: 401,
+								headers: { "x-request-id": "req_refresh_123" },
+							},
 						),
 					now: () => now,
 					onTokenRefreshLog: (event) => events.push(event),
 				}),
 			).rejects.toThrow("HTTP 401")
 
-			expect(events[0]).toEqual({ type: "token_refresh_started" })
+			expect(events[0]).toMatchObject({
+				type: "token_refresh_started",
+				refreshReason: "refresh_interval_elapsed",
+				lastRefreshAgeMs: 60 * 60 * 1000,
+				accessTokenExpiresAt: "2025-01-11T00:00:00.000Z",
+			})
 			expect(events[1]).toMatchObject({
 				type: "token_refresh_failed",
 				status: 401,
+				refreshReason: "refresh_interval_elapsed",
+				lastRefreshAgeMs: 60 * 60 * 1000,
+				accessTokenExpiresAt: "2025-01-11T00:00:00.000Z",
+				oauthRequestId: "req_refresh_123",
 				oauthErrorCode: "invalid_grant",
 				responseContentType: "application/json",
 				responseBodyBytes: expect.any(Number),
 				errorDescription:
-					"Refresh token rejected for [redacted email]; access_token=[redacted]; device code=[redacted]",
+					"Refresh token rejected for [redacted email]; access_token=[redacted]; device code=[redacted]; device_code=[redacted]",
 			})
 			expect(JSON.stringify(events)).not.toContain("alice@example.com")
 			expect(JSON.stringify(events)).not.toContain("server-secret-do-not-log")
 			expect(JSON.stringify(events)).not.toContain("AB12-CD34")
+			expect(JSON.stringify(events)).not.toContain("hidden-device-code")
 			expect(JSON.stringify(events)).not.toContain(refreshSecret)
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })
