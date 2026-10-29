@@ -167,6 +167,7 @@ const getRefreshContext = (
 		return { refreshReason: "access_token_expiring", ...context }
 	}
 	if (
+		expiryMs === undefined &&
 		lastRefreshAgeMs !== undefined &&
 		lastRefreshAgeMs >= REFRESH_INTERVAL_MS
 	) {

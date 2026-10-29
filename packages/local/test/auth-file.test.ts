@@ -577,12 +577,41 @@ describe("loadAuthTokens", () => {
 		}
 	})
 
+	test("does not refresh a valid access token just because last_refresh is old", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-valid-token-"))
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const accessToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) + 10 * 24 * 60 * 60,
+		})
+		const fetch = vi.fn()
+		try {
+			await writeAuthFile(authPath, {
+				tokens: {
+					access_token: accessToken,
+					refresh_token: "refresh",
+					account_id: "acct-1",
+				},
+				last_refresh: new Date(now.getTime() - 60 * 60 * 1000).toISOString(),
+			})
+			const auth = await loadAuthTokens({
+				authFilePath: authPath,
+				fetch,
+				now: () => now,
+			})
+			expect(auth.accessToken).toBe(accessToken)
+			expect(fetch).not.toHaveBeenCalled()
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	test("logs refresh trigger and upstream diagnostics without exposing secrets", async () => {
 		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-log-"))
 		const authPath = path.join(root, "auth.json")
 		const now = new Date("2025-01-01T00:00:00Z")
 		const accessToken = createJwt({
-			exp: Math.floor(now.getTime() / 1000) + 10 * 24 * 60 * 60,
+			exp: Math.floor(now.getTime() / 1000) + 60,
 		})
 		const responseDetail =
 			"Refresh token rejected for alice@example.com; access_token=server-secret-do-not-log; device code: AB12-CD34; device_code=hidden-device-code"
@@ -620,16 +649,16 @@ describe("loadAuthTokens", () => {
 
 			expect(events[0]).toMatchObject({
 				type: "token_refresh_started",
-				refreshReason: "refresh_interval_elapsed",
+				refreshReason: "access_token_expiring",
 				lastRefreshAgeMs: 60 * 60 * 1000,
-				accessTokenExpiresAt: "2025-01-11T00:00:00.000Z",
+				accessTokenExpiresAt: "2025-01-01T00:01:00.000Z",
 			})
 			expect(events[1]).toMatchObject({
 				type: "token_refresh_failed",
 				status: 401,
-				refreshReason: "refresh_interval_elapsed",
+				refreshReason: "access_token_expiring",
 				lastRefreshAgeMs: 60 * 60 * 1000,
-				accessTokenExpiresAt: "2025-01-11T00:00:00.000Z",
+				accessTokenExpiresAt: "2025-01-01T00:01:00.000Z",
 				oauthRequestId: "req_refresh_123",
 				oauthErrorCode: "invalid_grant",
 				responseContentType: "application/json",
