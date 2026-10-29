@@ -9,6 +9,7 @@ import {
 	parseJwtClaims,
 	refreshOpenAIOAuthTokens,
 } from "@openai-oauth/core"
+import lockfile from "proper-lockfile"
 
 const AUTH_FILENAME = "auth.json"
 const REFRESH_EXPIRY_MARGIN_MS = 5 * 60 * 1000
@@ -38,10 +39,25 @@ export type EffectiveAuth = {
 	lastRefresh?: string
 }
 
+type RefreshReason =
+	| "access_token_missing"
+	| "access_token_expiring"
+	| "refresh_interval_elapsed"
+
+type RefreshLogContext = {
+	refreshReason: RefreshReason
+	lastRefreshAgeMs?: number
+	accessTokenExpiresAt?: string
+	accessTokenSecondsUntilExpiry?: number
+}
+
 type TokenRefreshLogEvent =
-	| { type: "token_refresh_started" }
-	| { type: "token_refresh_succeeded"; durationMs: number }
-	| {
+	| ({ type: "token_refresh_started" } & RefreshLogContext)
+	| ({
+			type: "token_refresh_succeeded"
+			durationMs: number
+	  } & RefreshLogContext)
+	| ({
 			type: "token_refresh_failed"
 			durationMs: number
 			errorName: string
@@ -50,7 +66,8 @@ type TokenRefreshLogEvent =
 			errorDescription?: string
 			responseBodyBytes?: number
 			responseContentType?: string
-	  }
+			oauthRequestId?: string
+	  } & RefreshLogContext)
 
 export type AuthLoaderOptions = {
 	clientId?: string
@@ -109,29 +126,53 @@ const parseIsoDate = (value: string | undefined): Date | undefined => {
 	return Number.isNaN(date.getTime()) ? undefined : date
 }
 
-const shouldRefreshAccessToken = (
+const getRefreshContext = (
 	accessToken: string | undefined,
 	lastRefresh: string | undefined,
 	now: Date,
-): boolean => {
-	if (typeof accessToken !== "string" || accessToken.length === 0) {
-		return true
-	}
-
-	const claims = parseJwtClaims(accessToken)
-	const exp = claims && typeof claims.exp === "number" ? claims.exp : undefined
-	if (typeof exp === "number") {
-		const expiryMs = exp * 1000
-		if (expiryMs <= now.getTime() + REFRESH_EXPIRY_MARGIN_MS) {
-			return true
-		}
-	}
-
+): RefreshLogContext | undefined => {
 	const refreshedAt = parseIsoDate(lastRefresh)
-	if (refreshedAt) {
-		return refreshedAt.getTime() <= now.getTime() - REFRESH_INTERVAL_MS
+	const lastRefreshAgeMs = refreshedAt
+		? now.getTime() - refreshedAt.getTime()
+		: undefined
+	const claims = accessToken ? parseJwtClaims(accessToken) : undefined
+	const exp = claims && typeof claims.exp === "number" ? claims.exp : undefined
+	const expiryMs = exp === undefined ? undefined : exp * 1000
+	const expiryDate =
+		expiryMs !== undefined &&
+		Number.isFinite(expiryMs) &&
+		Math.abs(expiryMs) <= 8.64e15
+			? new Date(expiryMs).toISOString()
+			: undefined
+	const context = {
+		...(lastRefreshAgeMs === undefined ? {} : { lastRefreshAgeMs }),
+		...(expiryDate === undefined ? {} : { accessTokenExpiresAt: expiryDate }),
+		...(expiryMs === undefined || !Number.isFinite(expiryMs)
+			? {}
+			: {
+					accessTokenSecondsUntilExpiry: Math.floor(
+						(expiryMs - now.getTime()) / 1000,
+					),
+				}),
 	}
-	return false
+
+	if (!accessToken) {
+		return { refreshReason: "access_token_missing", ...context }
+	}
+	if (
+		expiryMs !== undefined &&
+		Number.isFinite(expiryMs) &&
+		expiryMs <= now.getTime() + REFRESH_EXPIRY_MARGIN_MS
+	) {
+		return { refreshReason: "access_token_expiring", ...context }
+	}
+	if (
+		lastRefreshAgeMs !== undefined &&
+		lastRefreshAgeMs >= REFRESH_INTERVAL_MS
+	) {
+		return { refreshReason: "refresh_interval_elapsed", ...context }
+	}
+	return undefined
 }
 
 const uniquePaths = (paths: string[]): string[] => {
@@ -266,6 +307,68 @@ const writeAuthFile = async (
 	})
 }
 
+const withAuthFileLock = async <T>(
+	filePath: string,
+	action: (assertLock: () => void) => Promise<T>,
+): Promise<T> => {
+	await ensureDirectory(filePath)
+	try {
+		await fs.writeFile(filePath, "{}", {
+			encoding: "utf-8",
+			flag: "wx",
+			mode: 0o600,
+		})
+	} catch (error) {
+		if (!isRecord(error) || error.code !== "EEXIST") throw error
+	}
+
+	let compromisedError: Error | undefined
+	const release = await lockfile.lock(filePath, {
+		realpath: false,
+		retries: {
+			retries: 10,
+			factor: 2,
+			minTimeout: 100,
+			maxTimeout: 1000,
+			randomize: true,
+		},
+		stale: 30_000,
+		update: 10_000,
+		onCompromised: (error) => {
+			compromisedError = error
+		},
+	})
+	const assertLock = (): void => {
+		if (compromisedError) throw compromisedError
+	}
+
+	let result!: T
+	let actionError: unknown
+	let actionFailed = false
+	try {
+		result = await action(assertLock)
+		assertLock()
+	} catch (error) {
+		actionError = error
+		actionFailed = true
+	}
+
+	let releaseError: unknown
+	let releaseFailed = false
+	try {
+		await release()
+	} catch (error) {
+		if (!compromisedError) {
+			releaseError = error
+			releaseFailed = true
+		}
+	}
+	if (actionFailed) throw actionError
+	if (releaseFailed) throw releaseError
+	assertLock()
+	return result
+}
+
 export const resolveCodexAuthFilePath = (authFilePath?: string): string => {
 	if (authFilePath) {
 		return authFilePath
@@ -282,9 +385,6 @@ export const saveAuthTokens = async (
 	options: SaveAuthTokensOptions,
 ): Promise<SavedAuthTokens> => {
 	const filePath = resolveCodexAuthFilePath(options.authFilePath)
-	const existing = (await readAuthFile([filePath])).data ?? {}
-	const now = options.now ?? (() => new Date())
-	const savedAt = now().toISOString()
 	const accountId =
 		options.token.accountId ??
 		deriveAccountId(options.token.idToken) ??
@@ -296,30 +396,37 @@ export const saveAuthTokens = async (
 		)
 	}
 
-	await writeAuthFile(filePath, {
-		...existing,
-		auth_mode: "chatgpt",
-		tokens: {
-			id_token: options.token.idToken,
-			access_token: options.token.accessToken,
-			refresh_token: options.token.refreshToken,
-			account_id: accountId,
-		},
-		last_refresh: savedAt,
-	})
+	return withAuthFileLock(filePath, async (assertLock) => {
+		const existing = (await readAuthFile([filePath])).data ?? {}
+		const now = options.now ?? (() => new Date())
+		const savedAt = now().toISOString()
 
-	return {
-		path: filePath,
-		auth: {
-			accessToken: options.token.accessToken,
-			accountId,
-			isFedRamp: options.token.isFedRamp,
-			idToken: options.token.idToken,
-			refreshToken: options.token.refreshToken,
-			sourcePath: filePath,
-			lastRefresh: savedAt,
-		},
-	}
+		assertLock()
+		await writeAuthFile(filePath, {
+			...existing,
+			auth_mode: "chatgpt",
+			tokens: {
+				id_token: options.token.idToken,
+				access_token: options.token.accessToken,
+				refresh_token: options.token.refreshToken,
+				account_id: accountId,
+			},
+			last_refresh: savedAt,
+		})
+
+		return {
+			path: filePath,
+			auth: {
+				accessToken: options.token.accessToken,
+				accountId,
+				isFedRamp: options.token.isFedRamp,
+				idToken: options.token.idToken,
+				refreshToken: options.token.refreshToken,
+				sourcePath: filePath,
+				lastRefresh: savedAt,
+			},
+		}
+	})
 }
 
 const refreshChatGptTokens = async (
@@ -392,26 +499,33 @@ export const loadAuthTokens = async (
 		deriveChatGptAccountIsFedRamp(accessToken)
 	let lastRefresh = authData.last_refresh
 
-	const needsRefresh =
-		ensureFresh &&
-		typeof refreshToken === "string" &&
-		shouldRefreshAccessToken(accessToken, lastRefresh, now())
+	const refreshLogContext =
+		ensureFresh && typeof refreshToken === "string"
+			? getRefreshContext(accessToken, lastRefresh, now())
+			: undefined
 
-	if (needsRefresh && typeof refreshToken === "string") {
+	if (refreshLogContext && typeof refreshToken === "string") {
 		const lockPath = path.resolve(
 			readResult.path ?? resolveWritePath(authFilePath),
 		)
 		let pending = refreshes.get(lockPath)
 		if (!pending) {
-			pending = (async (): Promise<EffectiveAuth> => {
+			pending = withAuthFileLock(lockPath, async (assertLock) => {
 				const latest = await readAuthFile([lockPath])
 				const latestAuth = latest.data ?? {}
 				const latestTokens = normalizeTokens(latestAuth.tokens)
 				const latestAccess = latestTokens.access_token
 				const latestRefresh = latestTokens.refresh_token
-				if (latestAccess && latestRefresh !== refreshToken) {
+				const latestRefreshContext = getRefreshContext(
+					latestAccess,
+					latestAuth.last_refresh,
+					now(),
+				)
+				if (latestAccess && !latestRefreshContext) {
 					const latestAccount =
-						latestTokens.account_id ?? deriveAccountId(latestTokens.id_token)
+						latestTokens.account_id ??
+						deriveAccountId(latestTokens.id_token) ??
+						deriveAccountId(latestAccess)
 					if (!latestAccount)
 						throw new Error(
 							"ChatGPT account id not found in auth.json. Run `npx openai-oauth login` to sign in again.",
@@ -428,31 +542,41 @@ export const loadAuthTokens = async (
 						lastRefresh: latestAuth.last_refresh,
 					}
 				}
+				if (!latestRefreshContext) {
+					throw new Error("ChatGPT access token not found in auth.json.")
+				}
+				if (!latestRefresh) {
+					throw new Error(
+						"ChatGPT refresh token not found in auth.json. Please run npx openai-oauth login to sign in again.",
+					)
+				}
+				const refreshContext = latestRefreshContext
 				const startedAt = Date.now()
 				emitTokenRefreshLog(onTokenRefreshLog, {
 					type: "token_refresh_started",
+					...refreshContext,
 				})
 				try {
 					const refreshed = await refreshChatGptTokens(
-						latestRefresh ?? refreshToken,
+						latestRefresh,
 						clientId,
 						issuer,
 						tokenUrl,
 						fetch,
 					)
-					const nextId = refreshed.idToken ?? latestTokens.id_token ?? idToken
-					const nextRefresh =
-						refreshed.refreshToken ?? latestRefresh ?? refreshToken
+					const nextId = refreshed.idToken ?? latestTokens.id_token
+					const nextRefresh = refreshed.refreshToken ?? latestRefresh
 					const nextAccount =
 						refreshed.accountId ??
 						latestTokens.account_id ??
-						accountId ??
-						deriveAccountId(nextId)
+						deriveAccountId(nextId) ??
+						deriveAccountId(refreshed.accessToken)
 					if (!nextAccount)
 						throw new Error(
 							"ChatGPT account id not found in OpenAI OAuth token response.",
 						)
 					const refreshedAt = now().toISOString()
+					assertLock()
 					await writeAuthFile(lockPath, {
 						...latestAuth,
 						auth_mode: "chatgpt",
@@ -467,6 +591,7 @@ export const loadAuthTokens = async (
 					emitTokenRefreshLog(onTokenRefreshLog, {
 						type: "token_refresh_succeeded",
 						durationMs: Date.now() - startedAt,
+						...refreshContext,
 					})
 					return {
 						accessToken: refreshed.accessToken,
@@ -474,7 +599,8 @@ export const loadAuthTokens = async (
 						idToken: nextId,
 						refreshToken: nextRefresh,
 						isFedRamp:
-							isFedRamp ||
+							deriveChatGptAccountIsFedRamp(latestTokens.id_token) ||
+							deriveChatGptAccountIsFedRamp(latestAccess) ||
 							refreshed.isFedRamp === true ||
 							deriveChatGptAccountIsFedRamp(nextId) ||
 							deriveChatGptAccountIsFedRamp(refreshed.accessToken),
@@ -493,9 +619,11 @@ export const loadAuthTokens = async (
 					const errorDescription = details.oauthErrorDescription
 					const responseBodyBytes = details.responseBodyBytes
 					const responseContentType = details.responseContentType
+					const oauthRequestId = details.oauthRequestId
 					emitTokenRefreshLog(onTokenRefreshLog, {
 						type: "token_refresh_failed",
 						durationMs: Date.now() - startedAt,
+						...refreshContext,
 						errorName:
 							error instanceof Error && error.name
 								? error.name
@@ -514,10 +642,14 @@ export const loadAuthTokens = async (
 						...(typeof responseContentType === "string"
 							? { responseContentType }
 							: {}),
+						...(typeof oauthRequestId === "string" &&
+						/^[A-Za-z0-9._:-]{1,128}$/.test(oauthRequestId)
+							? { oauthRequestId }
+							: {}),
 					})
 					throw error
 				}
-			})()
+			})
 			refreshes.set(lockPath, pending)
 			void pending
 				.finally(() => {

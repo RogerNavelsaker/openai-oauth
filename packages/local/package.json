@@ -45,10 +45,12 @@
 		"access": "public"
 	},
 	"dependencies": {
-		"@openai-oauth/core": "workspace:*"
+		"@openai-oauth/core": "workspace:*",
+		"proper-lockfile": "4.1.2"
 	},
 	"devDependencies": {
 		"@types/node": "20.17.24",
+		"@types/proper-lockfile": "4.1.4",
 		"typescript": "5.9.2",
 		"vitest": "4.1.12"
 	},

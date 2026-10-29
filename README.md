@@ -282,7 +282,7 @@ The CLI also supports a few configuration options that generally do not need to 
 
 ### OCI image logging
 
-The fork-owned OCI image writes JSON token-refresh lifecycle events to stdout by default. Failure entries include HTTP status, recognized OAuth error code, response content type and byte length, and a sanitized error description truncated to 240 characters. Descriptions redact bearer credentials, token fields, JWTs, email addresses, device codes, and long opaque values; raw response bodies and auth tokens are not logged. Read events with `podman logs <container>`.
+The fork-owned OCI image writes JSON token-refresh lifecycle events to stdout by default. Refresh lifecycle entries include the trigger reason, age of the last refresh, access-token expiry/remaining lifetime, response status, recognized OAuth error code, response content type and byte length, sanitized error description (max 240 characters), and a validated upstream request ID when provided. Descriptions redact bearer credentials, token fields, JWTs, email addresses, device codes, and long opaque values; raw response bodies and auth tokens are not logged. Read events with `podman logs <container>`.
 
 OCI images cannot set log retention. For bounded per-container logs, create the Podman container with `--log-driver=k8s-file --log-opt=max-size=10mb`. Podman's default `journald` driver uses the host's journal retention settings instead; changing logging options requires recreating an existing container.
 
