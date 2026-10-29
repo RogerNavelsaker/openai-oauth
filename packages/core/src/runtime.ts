@@ -18,6 +18,26 @@ const DEFAULT_CODEX_INSTRUCTIONS = ""
 const MODEL_CATALOG_TTL_MS = 5 * 60 * 1000
 const MODEL_CATALOG_FAILURE_TTL_MS = 60 * 1000
 const RESPONSES_LITE_HEADER = "x-openai-internal-codex-responses-lite"
+const OAUTH_ERROR_CODES = new Set([
+	"access_denied",
+	"account_selection_required",
+	"authorization_pending",
+	"consent_required",
+	"expired_token",
+	"insufficient_scope",
+	"interaction_required",
+	"invalid_client",
+	"invalid_grant",
+	"invalid_request",
+	"invalid_scope",
+	"invalid_token",
+	"login_required",
+	"server_error",
+	"slow_down",
+	"temporarily_unavailable",
+	"unauthorized_client",
+	"unsupported_grant_type",
+])
 
 export type FetchFunction = typeof fetch
 
@@ -343,9 +363,20 @@ const requestOpenAIOAuthTokens = async (options: {
 
 	if (!response.ok) {
 		let detail = ""
+		let oauthErrorCode: string | undefined
 		try {
 			const parsed = JSON.parse(bodyText)
 			if (isRecord(parsed)) {
+				const oauthError = parsed.error
+				const code =
+					typeof oauthError === "string"
+						? oauthError
+						: isRecord(oauthError)
+							? oauthError.code
+							: (parsed.error_code ?? parsed.code)
+				if (typeof code === "string" && OAUTH_ERROR_CODES.has(code)) {
+					oauthErrorCode = code
+				}
 				const message =
 					parsed.error_description ?? parsed.message ?? parsed.detail
 				if (typeof message === "string") {
@@ -353,9 +384,12 @@ const requestOpenAIOAuthTokens = async (options: {
 				}
 			}
 		} catch {}
-		throw new Error(
+		const error = new Error(
 			`OpenAI OAuth token request failed with HTTP ${response.status}.${detail}`,
-		)
+		) as Error & { oauthErrorCode?: string; status: number }
+		error.status = response.status
+		if (oauthErrorCode) error.oauthErrorCode = oauthErrorCode
+		throw error
 	}
 
 	try {

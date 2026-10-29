@@ -27,6 +27,7 @@ const createAuthFile = async (): Promise<string> => {
 describe("openai oauth server", () => {
 	afterEach(() => {
 		vi.restoreAllMocks()
+		vi.unstubAllEnvs()
 	})
 
 	test("lists configured models", async () => {
@@ -216,6 +217,55 @@ describe("openai oauth server", () => {
 			recursive: true,
 			force: true,
 		})
+	})
+
+	test("logs safe OAuth refresh failure details", async () => {
+		vi.stubEnv("CODEX_OPENAI_SERVER_LOG_TOKEN_REFRESH", "1")
+		const authFilePath = await createAuthFile()
+		try {
+			await fs.writeFile(
+				authFilePath,
+				JSON.stringify({
+					tokens: { refresh_token: "refresh-secret", account_id: "acct-1" },
+					last_refresh: "2020-01-01T00:00:00Z",
+				}),
+				"utf-8",
+			)
+			const output = vi.spyOn(console, "log").mockImplementation(() => {})
+			const fetch = vi.fn(async () =>
+				Response.json(
+					{
+						error: "invalid_grant",
+						error_description: "private response body",
+					},
+					{ status: 401 },
+				),
+			)
+			const handler = createOpenAIOAuthFetchHandler({
+				authFilePath,
+				codexVersion: "0.144.1",
+				fetch,
+			})
+
+			const response = await handler(new Request("http://localhost/v1/models"))
+			expect(response.status).toBe(502)
+			const entries = output.mock.calls.map(([line]) =>
+				JSON.parse(String(line)),
+			)
+			expect(entries).toMatchObject([
+				{ source: "openai-oauth", type: "token_refresh_started" },
+				{
+					source: "openai-oauth",
+					type: "token_refresh_failed",
+					status: 401,
+					oauthErrorCode: "invalid_grant",
+				},
+			])
+			expect(JSON.stringify(entries)).not.toContain("refresh-secret")
+			expect(JSON.stringify(entries)).not.toContain("private response body")
+		} finally {
+			await fs.rm(path.dirname(authFilePath), { recursive: true, force: true })
+		}
 	})
 
 	test("reports the replay state mode in health", async () => {

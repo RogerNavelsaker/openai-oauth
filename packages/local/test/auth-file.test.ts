@@ -415,4 +415,82 @@ describe("loadAuthTokens", () => {
 			await fs.rm(root, { recursive: true, force: true })
 		}
 	})
+	test("does not log arbitrary token-endpoint error strings", async () => {
+		const root = await fs.mkdtemp(
+			path.join(os.tmpdir(), "auth-refresh-log-code-"),
+		)
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const privateValue = "refresh-secret-must-not-log"
+		const events: Array<Record<string, unknown>> = []
+
+		try {
+			await writeAuthFile(authPath, {
+				tokens: { refresh_token: "refresh-token", account_id: "acct-1" },
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			await expect(
+				loadAuthTokens({
+					authFilePath: authPath,
+					fetch: async () =>
+						Response.json({ error: privateValue }, { status: 401 }),
+					now: () => now,
+					onTokenRefreshLog: (event) => events.push(event),
+				}),
+			).rejects.toThrow("HTTP 401")
+			expect(JSON.stringify(events)).not.toContain(privateValue)
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
+	test("logs failed refresh status and OAuth error code without response details", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-refresh-log-"))
+		const authPath = path.join(root, "auth.json")
+		const now = new Date("2025-01-01T00:00:00Z")
+		const expiredToken = createJwt({
+			exp: Math.floor(now.getTime() / 1000) - 10,
+		})
+		const responseSecret = "response-secret-do-not-log"
+		const refreshSecret = "refresh-token-do-not-log"
+		const events: Array<Record<string, unknown>> = []
+
+		try {
+			await writeAuthFile(authPath, {
+				tokens: {
+					access_token: expiredToken,
+					refresh_token: refreshSecret,
+					account_id: "acct-1",
+				},
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+
+			await expect(
+				loadAuthTokens({
+					authFilePath: authPath,
+					fetch: async () =>
+						Response.json(
+							{
+								error: "invalid_grant",
+								error_description: responseSecret,
+							},
+							{ status: 401 },
+						),
+					now: () => now,
+					onTokenRefreshLog: (event) => events.push(event),
+				}),
+			).rejects.toThrow("HTTP 401")
+
+			expect(events[0]).toEqual({ type: "token_refresh_started" })
+			expect(events[1]).toMatchObject({
+				type: "token_refresh_failed",
+				status: 401,
+				oauthErrorCode: "invalid_grant",
+			})
+			expect(JSON.stringify(events)).not.toContain(responseSecret)
+			expect(JSON.stringify(events)).not.toContain(refreshSecret)
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
 })

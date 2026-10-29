@@ -21,7 +21,7 @@
         src = source;
         nativeBuildInputs = [ bun ];
         outputHashMode = "recursive";
-        outputHash = "sha256-MmkjrtUUdX0B9i4+1SyEmZKIUkIO/CHF8DYVCQLkk2E=";
+        outputHash = "sha256-S6j5sLXa5XK2AM00ewZ4tXPF3xfbAG6Weq9AdDWHUXU=";
         buildPhase = ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
@@ -126,7 +126,12 @@
           WorkingDir = "/data";
           Entrypoint = [ "${openaiOauthEntrypoint}/bin/openai-oauth-entrypoint" ];
           Cmd = [ "--device-auth" "--host" "0.0.0.0" "--port" "10531" ];
-          Env = [ "HOME=/data" "CODEX_HOME=/data" "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt" ];
+          Env = [
+            "HOME=/data"
+            "CODEX_HOME=/data"
+            "CODEX_OPENAI_SERVER_LOG_TOKEN_REFRESH=1"
+            "SSL_CERT_FILE=${pkgs.cacert}/etc/ssl/certs/ca-bundle.crt"
+          ];
           Volumes = { "/data" = { }; };
           StopSignal = "SIGTERM";
           Labels = {

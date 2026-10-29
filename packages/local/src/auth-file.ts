@@ -38,6 +38,17 @@ export type EffectiveAuth = {
 	lastRefresh?: string
 }
 
+type TokenRefreshLogEvent =
+	| { type: "token_refresh_started" }
+	| { type: "token_refresh_succeeded"; durationMs: number }
+	| {
+			type: "token_refresh_failed"
+			durationMs: number
+			errorName: string
+			status?: number
+			oauthErrorCode?: string
+	  }
+
 export type AuthLoaderOptions = {
 	clientId?: string
 	issuer?: string
@@ -46,6 +57,7 @@ export type AuthLoaderOptions = {
 	fetch: FetchFunction
 	ensureFresh?: boolean
 	now?: () => Date
+	onTokenRefreshLog?: (event: TokenRefreshLogEvent) => void
 }
 
 export type SaveAuthTokensOptions = {
@@ -65,6 +77,15 @@ type AuthReadResult = {
 }
 
 const refreshes = new Map<string, Promise<EffectiveAuth>>()
+
+const emitTokenRefreshLog = (
+	logger: AuthLoaderOptions["onTokenRefreshLog"],
+	event: TokenRefreshLogEvent,
+): void => {
+	try {
+		logger?.(event)
+	} catch {}
+}
 
 type RefreshOutcome = {
 	accessToken: string
@@ -345,6 +366,7 @@ export const loadAuthTokens = async (
 		fetch,
 		ensureFresh = true,
 		now = () => new Date(),
+		onTokenRefreshLog,
 	} = options
 
 	if (typeof fetch !== "function") {
@@ -403,49 +425,82 @@ export const loadAuthTokens = async (
 						lastRefresh: latestAuth.last_refresh,
 					}
 				}
-				const refreshed = await refreshChatGptTokens(
-					latestRefresh ?? refreshToken,
-					clientId,
-					issuer,
-					tokenUrl,
-					fetch,
-				)
-				const nextId = refreshed.idToken ?? latestTokens.id_token ?? idToken
-				const nextRefresh =
-					refreshed.refreshToken ?? latestRefresh ?? refreshToken
-				const nextAccount =
-					refreshed.accountId ??
-					latestTokens.account_id ??
-					accountId ??
-					deriveAccountId(nextId)
-				if (!nextAccount)
-					throw new Error(
-						"ChatGPT account id not found in OpenAI OAuth token response.",
-					)
-				const refreshedAt = now().toISOString()
-				await writeAuthFile(lockPath, {
-					...latestAuth,
-					auth_mode: "chatgpt",
-					tokens: {
-						id_token: nextId,
-						access_token: refreshed.accessToken,
-						refresh_token: nextRefresh,
-						account_id: nextAccount,
-					},
-					last_refresh: refreshedAt,
+				const startedAt = Date.now()
+				emitTokenRefreshLog(onTokenRefreshLog, {
+					type: "token_refresh_started",
 				})
-				return {
-					accessToken: refreshed.accessToken,
-					accountId: nextAccount,
-					idToken: nextId,
-					refreshToken: nextRefresh,
-					isFedRamp:
-						isFedRamp ||
-						refreshed.isFedRamp === true ||
-						deriveChatGptAccountIsFedRamp(nextId) ||
-						deriveChatGptAccountIsFedRamp(refreshed.accessToken),
-					sourcePath: lockPath,
-					lastRefresh: refreshedAt,
+				try {
+					const refreshed = await refreshChatGptTokens(
+						latestRefresh ?? refreshToken,
+						clientId,
+						issuer,
+						tokenUrl,
+						fetch,
+					)
+					const nextId = refreshed.idToken ?? latestTokens.id_token ?? idToken
+					const nextRefresh =
+						refreshed.refreshToken ?? latestRefresh ?? refreshToken
+					const nextAccount =
+						refreshed.accountId ??
+						latestTokens.account_id ??
+						accountId ??
+						deriveAccountId(nextId)
+					if (!nextAccount)
+						throw new Error(
+							"ChatGPT account id not found in OpenAI OAuth token response.",
+						)
+					const refreshedAt = now().toISOString()
+					await writeAuthFile(lockPath, {
+						...latestAuth,
+						auth_mode: "chatgpt",
+						tokens: {
+							id_token: nextId,
+							access_token: refreshed.accessToken,
+							refresh_token: nextRefresh,
+							account_id: nextAccount,
+						},
+						last_refresh: refreshedAt,
+					})
+					emitTokenRefreshLog(onTokenRefreshLog, {
+						type: "token_refresh_succeeded",
+						durationMs: Date.now() - startedAt,
+					})
+					return {
+						accessToken: refreshed.accessToken,
+						accountId: nextAccount,
+						idToken: nextId,
+						refreshToken: nextRefresh,
+						isFedRamp:
+							isFedRamp ||
+							refreshed.isFedRamp === true ||
+							deriveChatGptAccountIsFedRamp(nextId) ||
+							deriveChatGptAccountIsFedRamp(refreshed.accessToken),
+						sourcePath: lockPath,
+						lastRefresh: refreshedAt,
+					}
+				} catch (error) {
+					const details = isRecord(error) ? error : {}
+					const status =
+						typeof details.status === "number" &&
+						details.status >= 100 &&
+						details.status <= 599
+							? details.status
+							: undefined
+					const code = details.oauthErrorCode
+					emitTokenRefreshLog(onTokenRefreshLog, {
+						type: "token_refresh_failed",
+						durationMs: Date.now() - startedAt,
+						errorName:
+							error instanceof Error && error.name
+								? error.name
+								: "UnknownError",
+						...(status === undefined ? {} : { status }),
+						...(typeof code === "string" &&
+						/^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$/.test(code)
+							? { oauthErrorCode: code }
+							: {}),
+					})
+					throw error
 				}
 			})()
 			refreshes.set(lockPath, pending)
