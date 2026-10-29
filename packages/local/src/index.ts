@@ -54,6 +54,7 @@ export const openaiCredentials = (
 				fetch: pickFetch(options.fetch),
 				issuer: options.issuer,
 				now: options.now,
+				onTokenRefreshLog: options.onTokenRefreshLog,
 				tokenUrl: options.tokenUrl,
 			}),
 		),

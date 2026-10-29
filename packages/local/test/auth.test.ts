@@ -47,4 +47,34 @@ describe("openaiCredentials", () => {
 			await fs.rm(root, { recursive: true, force: true })
 		}
 	})
+	test("passes refresh lifecycle events through the credential adapter", async () => {
+		const root = await fs.mkdtemp(
+			path.join(os.tmpdir(), "local-auth-refresh-log-"),
+		)
+		const authPath = path.join(root, "auth.json")
+		const events: Array<Record<string, unknown>> = []
+
+		try {
+			await writeAuthFile(authPath, {
+				tokens: { refresh_token: "refresh-token", account_id: "acct-1" },
+				last_refresh: "2020-01-01T00:00:00Z",
+			})
+			const auth = openaiCredentials({
+				authFilePath: authPath,
+				fetch: async () => Response.json({ access_token: "fresh-access" }),
+				onTokenRefreshLog: (event) => events.push(event),
+			})
+
+			await expect(auth.getSession()).resolves.toMatchObject({
+				accessToken: "fresh-access",
+				accountId: "acct-1",
+			})
+			expect(events.map((event) => event.type)).toEqual([
+				"token_refresh_started",
+				"token_refresh_succeeded",
+			])
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
 })

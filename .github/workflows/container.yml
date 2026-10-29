@@ -42,8 +42,11 @@ jobs:
         run: |
           image="ghcr.io/${GITHUB_REPOSITORY,,}"
           tag="${{ steps.image_tags.outputs.tag }}"
-          podman run --rm "$image:$tag" --help | grep -q 'Free OpenAI API access'
+          podman run --rm --log-driver=k8s-file --log-opt=max-size=10mb \
+            "$image:$tag" --help | grep -q 'Free OpenAI API access'
           podman image inspect --format '{{.Config.Cmd}}' "$image:$tag" | grep -q -- '--device-auth'
+          podman image inspect "$image:$tag" --format '{{range .Config.Env}}{{println .}}{{end}}' \
+            | grep -Fxq 'CODEX_OPENAI_SERVER_LOG_TOKEN_REFRESH=1'
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:

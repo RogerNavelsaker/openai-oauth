@@ -14,7 +14,7 @@ import {
 	handleImageEditRequest,
 	handleImageGenerationRequest,
 } from "./images.js"
-import { createRequestLogger } from "./logging.js"
+import { createRequestLogger, createTokenRefreshLogger } from "./logging.js"
 import type { OpenAIOAuthModel } from "./models.js"
 import { createModelResolver } from "./models.js"
 import { handleResponsesRequest } from "./responses.js"
@@ -88,7 +88,10 @@ const handleRoutes = async (
 }
 
 const createOpenAIOAuthRuntime = (settings: OpenAIOAuthServerOptions = {}) => {
-	const auth = openaiCredentials(settings)
+	const auth = openaiCredentials({
+		...settings,
+		onTokenRefreshLog: createTokenRefreshLogger(settings),
+	})
 	const sharedSettings = {
 		...settings,
 		auth: () => auth.getSession(),
