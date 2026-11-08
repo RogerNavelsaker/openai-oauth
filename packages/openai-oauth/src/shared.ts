@@ -90,16 +90,16 @@ export const toUsage = (usage: UsageLike) => ({
 	completion_tokens: usage.outputTokens ?? 0,
 	total_tokens: usage.totalTokens ?? 0,
 	prompt_tokens_details:
-		usage.cachedInputTokens == null
+		usage.inputTokenDetails.cacheReadTokens == null
 			? undefined
 			: {
-					cached_tokens: usage.cachedInputTokens,
+					cached_tokens: usage.inputTokenDetails.cacheReadTokens,
 				},
 	completion_tokens_details:
-		usage.reasoningTokens == null
+		usage.outputTokenDetails.reasoningTokens == null
 			? undefined
 			: {
-					reasoning_tokens: usage.reasoningTokens,
+					reasoning_tokens: usage.outputTokenDetails.reasoningTokens,
 				},
 })
 

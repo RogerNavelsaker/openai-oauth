@@ -13,10 +13,10 @@ type CliWarning = {
 
 const formatWarningMessage = (
 	warning: CliWarning,
-	provider: string,
-	model: string,
+	provider: string | undefined,
+	model: string | undefined,
 ): string => {
-	const prefix = `openai-oauth Warning (${provider} / ${model}):`
+	const prefix = `openai-oauth Warning (${provider ?? "unknown provider"} / ${model ?? "unknown model"}):`
 
 	switch (warning.type) {
 		case "unsupported": {

@@ -9,7 +9,7 @@
 	],
 	"overrides": {
 		"deepmerge": "4.1.2",
-		"esbuild": "0.28.1",
+		"esbuild": "0.28.2",
 		"postcss": "8.5.32"
 	},
 	"scripts": {
@@ -23,11 +23,11 @@
 		"format-and-lint:fix": "biome check . --write"
 	},
 	"devDependencies": {
-		"@biomejs/biome": "2.3.10",
-		"esbuild": "0.28.1",
-		"tsup": "8.5.1",
-		"turbo": "2.10.4",
-		"typescript": "5.9.2"
+		"@biomejs/biome": "2.6.6",
+		"esbuild": "0.28.2",
+		"tsup": "9.0.0",
+		"turbo": "2.11.10",
+		"typescript": "6.0.3"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

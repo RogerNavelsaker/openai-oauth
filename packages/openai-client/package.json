@@ -43,9 +43,9 @@
 		"@openai-oauth/core": "workspace:*"
 	},
 	"devDependencies": {
-		"openai": "7.45.1",
-		"typescript": "5.9.2",
-		"vitest": "4.1.12"
+		"openai": "7.53.0",
+		"typescript": "6.0.3",
+		"vitest": "5.1.0"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

@@ -4,6 +4,8 @@
 
 Connect OpenAI OAuth credentials to the Vercel AI SDK.
 
+This release targets Vercel AI SDK 7 (`ai` ^7.0.0).
+
 ```bash
 npm i @openai-oauth/ai-sdk @openai-oauth/local ai
 ```

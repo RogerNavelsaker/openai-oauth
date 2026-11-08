@@ -84,7 +84,7 @@ export const runCliWorker = async (
 		await instance?.server.close().catch(() => undefined)
 		await instance?.runtime.close().catch(() => undefined)
 		if (process.connected) {
-			process.disconnect()
+			process.disconnect?.()
 		}
 		process.exit(0)
 	}
