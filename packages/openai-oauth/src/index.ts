@@ -7,6 +7,7 @@ export {
 	startOpenAIOAuthServer,
 } from "./server.js"
 export type {
+	OpenAIOAuthControlOptions,
 	OpenAIOAuthServerLogEvent,
 	OpenAIOAuthServerOptions,
 	RunningOpenAIOAuthServer,

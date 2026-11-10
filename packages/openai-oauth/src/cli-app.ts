@@ -74,6 +74,35 @@ const parseModels = (value: string | undefined): string[] | undefined => {
 	return models.length > 0 ? models : undefined
 }
 
+const authControlOptionsFromEnv = () => {
+	const token = process.env.OPENAI_OAUTH_CONTROL_TOKEN
+	if (!token) return undefined
+
+	const portValue = process.env.OPENAI_OAUTH_CONTROL_PORT
+	let port: number | undefined
+	if (portValue !== undefined) {
+		if (!/^(0|[1-9][0-9]*)$/.test(portValue)) {
+			throw new Error(
+				"OPENAI_OAUTH_CONTROL_PORT must be an integer from 0 to 65535.",
+			)
+		}
+		port = Number(portValue)
+		if (port > 65535) {
+			throw new Error(
+				"OPENAI_OAUTH_CONTROL_PORT must be an integer from 0 to 65535.",
+			)
+		}
+	}
+
+	return {
+		token,
+		...(process.env.OPENAI_OAUTH_CONTROL_HOST
+			? { host: process.env.OPENAI_OAUTH_CONTROL_HOST }
+			: {}),
+		...(port === undefined ? {} : { port }),
+	}
+}
+
 const helpLines = [
 	"Free OpenAI API access with your ChatGPT account.",
 	"",
@@ -241,6 +270,7 @@ export const toServerOptions = (args: CliArgs) => ({
 	clientId: args.clientId,
 	tokenUrl: args.tokenUrl,
 	authFilePath: args.authFilePath,
+	authControl: authControlOptionsFromEnv(),
 })
 
 export const toLoginOptions = (args: CliArgs) => ({
@@ -712,7 +742,7 @@ export const runCli = async (argv: string[] = hideBin(process.argv)) => {
 	const options = toServerOptions(args)
 	warnAboutNetworkBinding(options.host)
 	const existingAuthFile = await findExistingAuthFile(options.authFilePath)
-	if (!existingAuthFile) {
+	if (!existingAuthFile && !options.authControl) {
 		await updateCheck
 		if (args.deviceAuth) {
 			if (!(await runLoginWithCancellation(toLoginOptions(args)))) {

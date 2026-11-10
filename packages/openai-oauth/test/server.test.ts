@@ -2,7 +2,10 @@ import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test, vi } from "vitest"
-import { createOpenAIOAuthFetchHandler } from "../src/index.js"
+import {
+	createOpenAIOAuthFetchHandler,
+	startOpenAIOAuthServer,
+} from "../src/index.js"
 
 const createAuthFile = async (): Promise<string> => {
 	const root = await fs.mkdtemp(path.join(os.tmpdir(), "openai-oauth-server-"))
@@ -25,6 +28,47 @@ const createAuthFile = async (): Promise<string> => {
 }
 
 describe("openai oauth server", () => {
+	test("starts the control listener before credentials exist", async () => {
+		const root = await fs.mkdtemp(
+			path.join(os.tmpdir(), "oauth-control-bootstrap-"),
+		)
+		const authFilePath = path.join(root, "missing-auth.json")
+		const upstreamFetch = vi.fn<typeof globalThis.fetch>(async () => {
+			throw new Error("bootstrap should not fetch models before sign-in")
+		})
+		let server: Awaited<ReturnType<typeof startOpenAIOAuthServer>> | undefined
+
+		try {
+			server = await startOpenAIOAuthServer({
+				host: "127.0.0.1",
+				port: 0,
+				authFilePath,
+				fetch: upstreamFetch,
+				authControl: {
+					host: "127.0.0.1",
+					port: 0,
+					token: "control-token-for-tests-0123456789abcdef",
+				},
+			})
+			expect(server.models).toEqual([])
+			expect(upstreamFetch).not.toHaveBeenCalled()
+			expect(server.controlUrl).toBeDefined()
+
+			const response = await globalThis.fetch(`${server.controlUrl}/status`, {
+				headers: {
+					Authorization: "Bearer control-token-for-tests-0123456789abcdef",
+				},
+			})
+			expect(response.status).toBe(200)
+			await expect(response.json()).resolves.toMatchObject({
+				credentialsConfigured: false,
+				login: { state: "idle" },
+			})
+		} finally {
+			await server?.close()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
 	afterEach(() => {
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()
