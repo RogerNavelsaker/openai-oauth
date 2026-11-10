@@ -21,7 +21,7 @@
         src = source;
         nativeBuildInputs = [ bun ];
         outputHashMode = "recursive";
-        outputHash = "sha256-4aGWnUUv+6sWVMq2KD2x6zhwadV0CMBtU91w6HVDPmw=";
+        outputHash = "sha256-xrworu3KliOiLEDOv0f3ZzxXs8PPntOW1YG+899gWO0=";
         buildPhase = ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
