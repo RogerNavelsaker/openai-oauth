@@ -167,7 +167,21 @@ const parseControlStatus = (value: unknown): ControlStatus | undefined => {
 				? value.login.error
 				: "Sign-in failed. Start a new login or check the sidecar logs."
 	}
-	return { credentialsConfigured: value.credentialsConfigured, login }
+	const credentialsUpdatedAt = value.credentialsUpdatedAt
+	const accessTokenExpiresAt = value.accessTokenExpiresAt
+	return {
+		credentialsConfigured: value.credentialsConfigured,
+		...(typeof credentialsUpdatedAt === "string" &&
+		Number.isFinite(Date.parse(credentialsUpdatedAt))
+			? { credentialsUpdatedAt }
+			: {}),
+		...(typeof accessTokenExpiresAt === "string" &&
+		Number.isFinite(Date.parse(accessTokenExpiresAt))
+			? { accessTokenExpiresAt }
+			: {}),
+		accessTokenAppearsValid: value.accessTokenAppearsValid === true,
+		login,
+	}
 }
 
 const send = (

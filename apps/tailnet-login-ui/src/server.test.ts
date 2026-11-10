@@ -79,7 +79,9 @@ describe("tailnet OAuth login UI", () => {
 		)
 		expect(html).toContain("Start device-code sign-in")
 		expect(html).toContain("/assets/copy.js")
-		expect(html).toContain("Tokens stay on the sidecar")
+		expect(html).toContain(
+			"Your credentials are stored securely and never shown here",
+		)
 		expect(html).not.toContain(CONTROL_TOKEN)
 		expect(
 			sidecarFetch.mock.calls.some(([, init]) => init?.method === "POST"),

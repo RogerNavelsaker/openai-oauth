@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net"
 import {
 	createOpenAIOAuthRequest,
 	exchangeOpenAIOAuthCode,
+	parseJwtClaims,
 } from "@openai-oauth/core"
 import { loadAuthTokens, saveAuthTokens } from "@openai-oauth/local/auth-file"
 import { runOpenAIOAuthDeviceCodeLogin } from "./login.js"
@@ -103,18 +104,30 @@ export const startOpenAIOAuthControlServer = async (
 		}
 	}
 
-	const credentialsConfigured = async (): Promise<boolean> => {
+	const credentialsStatus = async () => {
 		try {
-			await loadAuthTokens({
+			const auth = await loadAuthTokens({
 				authFilePath: options.authFilePath,
 				clientId: options.clientId,
 				tokenUrl: options.tokenUrl,
 				fetch: fetchFn,
 				ensureFresh: false,
 			})
-			return true
+			const claims = parseJwtClaims(auth.accessToken)
+			const expiry =
+				claims && typeof claims.exp === "number" && Number.isFinite(claims.exp)
+					? new Date(claims.exp * 1000)
+					: undefined
+			return {
+				credentialsConfigured: true,
+				...(auth.lastRefresh ? { credentialsUpdatedAt: auth.lastRefresh } : {}),
+				...(expiry && Number.isFinite(expiry.getTime())
+					? { accessTokenExpiresAt: expiry.toISOString() }
+					: {}),
+				accessTokenAppearsValid: expiry ? expiry.getTime() > Date.now() : false,
+			}
 		} catch {
-			return false
+			return { credentialsConfigured: false, accessTokenAppearsValid: false }
 		}
 	}
 
@@ -230,7 +243,7 @@ export const startOpenAIOAuthControlServer = async (
 		}
 		if (req.method === "GET" && url.pathname === "/status") {
 			sendJson(res, 200, {
-				credentialsConfigured: await credentialsConfigured(),
+				...(await credentialsStatus()),
 				login: loginSnapshot(currentLogin),
 			})
 			return

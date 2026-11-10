@@ -9,6 +9,9 @@ export type LoginState =
 
 export type ControlStatus = {
 	credentialsConfigured: boolean
+	credentialsUpdatedAt?: string
+	accessTokenExpiresAt?: string
+	accessTokenAppearsValid?: boolean
 	login: {
 		state: LoginState
 		id?: string
@@ -44,6 +47,12 @@ export const renderStatus = (
 	const state = status?.login.state ?? "idle"
 	const poll = status !== undefined && isActive(state)
 	const login = status?.login
+	const reauthConfirm = status?.accessTokenAppearsValid
+		? 'hx-confirm="Your access token appears valid. Signing in again will replace the current credentials. Continue?"'
+		: ""
+	const metadata = status?.credentialsConfigured
+		? `<dl class="mt-5 space-y-2 text-sm text-zinc-300">${status.credentialsUpdatedAt ? `<div><dt class="inline text-zinc-400">Credentials last updated: </dt><dd class="inline">${escapeHtml(status.credentialsUpdatedAt)}</dd></div>` : ""}${status.accessTokenExpiresAt ? `<div><dt class="inline text-zinc-400">Access token expires: </dt><dd class="inline">${escapeHtml(status.accessTokenExpiresAt)}</dd></div>` : ""}</dl>`
+		: ""
 	const message = unavailable
 		? "The sidecar login service is unavailable. Check its connection and try again."
 		: state === "starting"
@@ -53,7 +62,7 @@ export const renderStatus = (
 				: state === "awaiting_callback"
 					? "Complete sign-in in your browser, then paste the full localhost callback URL here."
 					: state === "complete"
-						? "Sign-in complete. Credentials were saved by the sidecar."
+						? "Sign-in complete. Your credentials are ready to use."
 						: state === "failed"
 							? (login?.error ??
 								"Sign-in failed. Start a new login or check the sidecar logs.")
@@ -67,8 +76,8 @@ export const renderStatus = (
 			? `<form class="mt-6" hx-post="/_cancel" hx-target="#login-status" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><input type="hidden" name="id" value="${escapeHtml(login.id)}"><button class="rounded-lg border border-zinc-600 px-4 py-2 text-sm font-semibold text-zinc-100 hover:bg-zinc-800" type="submit">Cancel sign-in</button></form>`
 			: !unavailable
 				? `<div class="mt-6 flex flex-wrap gap-3">
-			<form hx-post="/_start" hx-target="#login-status" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950 hover:bg-emerald-300" type="submit">Start device-code sign-in</button></form>
-			<form hx-post="/_browser-start" hx-target="#login-status" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg border border-sky-400 px-4 py-2 text-sm font-semibold text-sky-200 hover:bg-zinc-800" type="submit">Start browser sign-in</button></form>
+			<form ${reauthConfirm} hx-post="/_start" hx-target="#login-status" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white hover:bg-emerald-500 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-emerald-300 transition-colors" type="submit">Start device-code sign-in</button></form>
+			<form ${reauthConfirm} hx-post="/_browser-start" hx-target="#login-status" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg border border-sky-300 px-4 py-2 text-sm font-semibold text-sky-100 hover:bg-zinc-800 focus-visible:outline focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-sky-300 transition-colors" type="submit">Start browser sign-in</button></form>
 		</div>`
 				: ""
 	const deviceCode =
@@ -95,7 +104,7 @@ export const renderStatus = (
 								: status?.credentialsConfigured
 									? "Credentials configured"
 									: "Sign-in required"
-	return `<section id="login-status" class="rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl"${poll ? ' hx-get="/_status" hx-trigger="every 2s" hx-swap="outerHTML"' : ""}><div class="flex items-center gap-3"><span class="h-2.5 w-2.5 rounded-full ${poll ? "animate-pulse bg-amber-300" : state === "complete" ? "bg-emerald-400" : "bg-zinc-500"}" aria-hidden="true"></span><h2 class="text-lg font-semibold text-zinc-100">${unavailable ? "Login service unavailable" : title}</h2></div><p class="mt-3 text-sm leading-6 text-zinc-300">${escapeHtml(message)}</p>${deviceCode}${browser}${controls}</section>`
+	return `<section id="login-status" class="rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl"${poll ? ' hx-get="/_status" hx-trigger="every 2s" hx-swap="outerHTML"' : ""}><div class="flex items-center gap-3"><span class="h-2.5 w-2.5 rounded-full ${poll ? "animate-pulse bg-amber-300" : state === "complete" ? "bg-emerald-400" : "bg-zinc-500"}" aria-hidden="true"></span><h2 class="text-lg font-semibold text-zinc-100">${unavailable ? "Login service unavailable" : title}</h2></div><p class="mt-3 text-sm leading-6 text-zinc-300">${escapeHtml(message)}</p>${metadata}${deviceCode}${browser}${controls}</section>`
 }
 
 export const renderPage = (
@@ -104,4 +113,4 @@ export const renderPage = (
 	unavailable = false,
 ): string => `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>OpenAI OAuth sign-in</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/htmx.js" defer></script><script src="/assets/hyperscript.js" defer></script><script src="/assets/copy.js" defer></script></head>
-<body class="min-h-screen bg-zinc-950 px-4 py-12 text-zinc-100"><main class="mx-auto max-w-xl"><p class="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Private account control</p><h1 class="mt-3 text-3xl font-bold tracking-tight">OpenAI OAuth sign-in</h1><p class="mt-3 text-sm leading-6 text-zinc-400">Choose browser sign-in or device-code sign-in. Login starts only when you press a button. Tokens stay on the sidecar.</p><div class="mt-8">${renderStatus(csrf, status, unavailable)}</div><p class="mt-6 text-xs leading-5 text-zinc-500">Never share callback URLs or sign-in codes. This page does not receive or display credentials.</p></main></body></html>`
+<body class="min-h-screen bg-zinc-950 px-4 py-12 text-zinc-100"><main class="mx-auto max-w-xl"><p class="text-xs font-bold uppercase tracking-[0.2em] text-emerald-300">Private account control</p><h1 class="mt-3 text-3xl font-bold tracking-tight">OpenAI OAuth sign-in</h1><p class="mt-3 text-sm leading-6 text-zinc-400">Choose browser sign-in or device-code sign-in. Login starts only when you press a button. Your credentials are stored securely and never shown here.</p><div class="mt-8">${renderStatus(csrf, status, unavailable)}</div><p class="mt-6 text-xs leading-5 text-zinc-500">Never share callback URLs or sign-in codes. This page does not receive or display credentials.</p></main></body></html>`
