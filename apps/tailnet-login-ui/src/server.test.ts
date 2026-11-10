@@ -36,6 +36,19 @@ describe("tailnet OAuth login UI", () => {
 		expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:/)
 	})
 
+	test("serves the same-origin clipboard handler", async () => {
+		const server = await startLoginUiServer(
+			options(async () => statusResponse("idle")),
+		)
+		servers.push(server)
+
+		const response = await globalThis.fetch(`${server.url}/assets/copy.js`)
+		const script = await response.text()
+		expect(response.status).toBe(200)
+		expect(response.headers.get("content-type")).toContain("text/javascript")
+		expect(script).toContain("navigator.clipboard.writeText")
+	})
+
 	test("proxies explicit sign-in server-side and keeps responses private", async () => {
 		let started = false
 		const sidecarFetch = vi.fn<typeof fetch>(async (input, init) => {
@@ -65,6 +78,7 @@ describe("tailnet OAuth login UI", () => {
 			"frame-ancestors 'none'",
 		)
 		expect(html).toContain("Start device-code sign-in")
+		expect(html).toContain("/assets/copy.js")
 		expect(html).toContain("Tokens stay on the sidecar")
 		expect(html).not.toContain(CONTROL_TOKEN)
 		expect(
@@ -116,6 +130,21 @@ describe("tailnet OAuth login UI", () => {
 		expect(
 			sidecarFetch.mock.calls.some(([, init]) => init?.method === "POST"),
 		).toBe(false)
+	})
+
+	test("renders a copy button instead of a visibility toggle", () => {
+		const fragment = renderStatus("a".repeat(48), {
+			credentialsConfigured: false,
+			login: {
+				id: activeId,
+				state: "awaiting_user",
+				verificationUrl: "https://auth.openai.com/codex/device",
+				userCode: "ABCD-EFGH",
+			},
+		})
+		expect(fragment).toContain("data-copy-device-code")
+		expect(fragment).toContain(">Copy code</button>")
+		expect(fragment).not.toContain("Toggle code visibility")
 	})
 
 	test("escapes device codes before rendering them as HTML", () => {

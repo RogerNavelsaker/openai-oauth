@@ -76,7 +76,8 @@ export const renderStatus = (
 			<p class="text-xs font-semibold uppercase tracking-wide text-zinc-400">One-time code</p>
 			<div class="mt-2 flex items-center gap-3">
 				<code id="device-code" class="select-all text-2xl font-bold tracking-widest text-emerald-300">${escapeHtml(code)}</code>
-				<button class="rounded border border-zinc-600 px-3 py-2 text-xs text-zinc-100 hover:bg-zinc-800" type="button" _="on click toggle .hidden on #device-code">Toggle code visibility</button>
+				<button class="rounded border border-zinc-600 px-3 py-2 text-xs text-zinc-100 hover:bg-zinc-800" type="button" data-copy-device-code>Copy code</button>
+				<span class="sr-only" id="device-code-copy-status" aria-live="polite"></span>
 			</div>
 			<a class="mt-4 inline-block text-sm font-semibold text-sky-300 underline underline-offset-4" href="https://auth.openai.com/codex/device" target="_blank" rel="noopener noreferrer">Open OpenAI device sign-in</a>
 			<p class="mt-3 text-xs text-amber-200">Only enter this code if you started this sign-in.</p>
@@ -108,6 +109,7 @@ export const renderPage = (
 	<link rel="stylesheet" href="/assets/styles.css">
 	<script src="/assets/htmx.js" defer></script>
 	<script src="/assets/hyperscript.js" defer></script>
+	<script src="/assets/copy.js" defer></script>
 </head>
 <body class="min-h-screen bg-zinc-950 px-4 py-12 text-zinc-100">
 	<main class="mx-auto max-w-xl">

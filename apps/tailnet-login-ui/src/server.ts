@@ -59,6 +59,7 @@ const hyperscriptPath = join(
 	"_hyperscript.min.js",
 )
 const cssPath = fileURLToPath(new URL("../dist/styles.css", import.meta.url))
+const copyScriptPath = fileURLToPath(new URL("./copy.js", import.meta.url))
 
 const securityHeaders = {
 	"Cache-Control": "no-store, private",
@@ -289,6 +290,10 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 		}
 		if (req.method === "GET" && url.pathname === "/assets/hyperscript.js") {
 			await serveAsset(res, hyperscriptPath, "text/javascript; charset=utf-8")
+			return
+		}
+		if (req.method === "GET" && url.pathname === "/assets/copy.js") {
+			await serveAsset(res, copyScriptPath, "text/javascript; charset=utf-8")
 			return
 		}
 		if (req.method === "GET" && url.pathname === "/") {
