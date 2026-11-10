@@ -171,6 +171,8 @@ describe("auth helpers", () => {
 		})
 
 		try {
+			await writeAuthFile(authPath, {})
+			await fs.chmod(authPath, 0o644)
 			const saved = await saveAuthTokens({
 				authFilePath: authPath,
 				now: () => new Date("2025-01-01T00:00:00Z"),
@@ -195,6 +197,7 @@ describe("auth helpers", () => {
 				},
 				last_refresh: "2025-01-01T00:00:00.000Z",
 			})
+			expect((await fs.stat(authPath)).mode & 0o777).toBe(0o600)
 		} finally {
 			await fs.rm(root, { recursive: true, force: true })
 		}
