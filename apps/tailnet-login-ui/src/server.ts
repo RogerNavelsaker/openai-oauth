@@ -42,6 +42,7 @@ const ALLOWED_STATES = new Set<LoginState>([
 	"idle",
 	"starting",
 	"awaiting_user",
+	"awaiting_callback",
 	"complete",
 	"failed",
 	"cancelled",
@@ -144,6 +145,20 @@ const parseControlStatus = (value: unknown): ControlStatus | undefined => {
 		}
 		login.verificationUrl = verificationUrl
 		login.userCode = userCode
+	}
+	if (state === "awaiting_callback") {
+		const authorizationUrl = value.login.authorizationUrl
+		try {
+			const parsed = new URL(String(authorizationUrl))
+			if (
+				parsed.origin !== "https://auth.openai.com" ||
+				parsed.pathname !== "/oauth/authorize"
+			)
+				return undefined
+		} catch {
+			return undefined
+		}
+		login.authorizationUrl = authorizationUrl as string
 	}
 	if (state === "failed") {
 		login.error =
@@ -310,6 +325,53 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 			try {
 				send(res, 200, renderStatus(csrf, await fetchStatus(options)))
 			} catch {
+				send(res, 200, renderStatus(csrf, undefined, true))
+			}
+			return
+		}
+		if (
+			req.method === "POST" &&
+			["/_browser-start", "/_browser-callback"].includes(url.pathname)
+		) {
+			const form = await isValidPost(req, options)
+			if (!form) {
+				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
+				return
+			}
+			try {
+				let response: Response
+				if (url.pathname === "/_browser-start") {
+					response = await options.fetch(
+						`${options.controlUrl}/browser-login`,
+						{
+							method: "POST",
+							headers: { Authorization: `Bearer ${options.controlToken}` },
+						},
+					)
+				} else {
+					const id = form.get("id") ?? ""
+					const callbackUrl = form.get("callbackUrl") ?? ""
+					if (!/^[a-f0-9]{32}$/.test(id) || callbackUrl.length > 4096) {
+						send(res, 400, "Invalid callback URL", "text/plain; charset=utf-8")
+						return
+					}
+					response = await options.fetch(
+						`${options.controlUrl}/browser-login/${id}/callback`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${options.controlToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ callbackUrl }),
+						},
+					)
+				}
+				if (!response.ok) throw new Error("control service unavailable")
+				const csrf = csrfForRequest(req, res, options)
+				send(res, 200, renderStatus(csrf, await fetchStatus(options)))
+			} catch {
+				const csrf = csrfForRequest(req, res, options)
 				send(res, 200, renderStatus(csrf, undefined, true))
 			}
 			return

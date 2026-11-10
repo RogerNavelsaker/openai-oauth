@@ -1,7 +1,11 @@
 import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
 import { createServer, type Server as HttpServer } from "node:http"
 import type { AddressInfo } from "node:net"
-import { loadAuthTokens } from "@openai-oauth/local/auth-file"
+import {
+	createOpenAIOAuthRequest,
+	exchangeOpenAIOAuthCode,
+} from "@openai-oauth/core"
+import { loadAuthTokens, saveAuthTokens } from "@openai-oauth/local/auth-file"
 import { runOpenAIOAuthDeviceCodeLogin } from "./login.js"
 
 export type AuthControlServerOptions = {
@@ -18,6 +22,7 @@ export type AuthControlServerOptions = {
 type LoginState =
 	| "starting"
 	| "awaiting_user"
+	| "awaiting_callback"
 	| "complete"
 	| "failed"
 	| "cancelled"
@@ -32,6 +37,9 @@ type LoginJob = {
 	state: LoginState
 	abort: AbortController
 	deviceCode?: DeviceCode
+	authorizationUrl?: string
+	stateToken?: string
+	codeVerifier?: string
 	error?: string
 }
 
@@ -81,6 +89,9 @@ export const startOpenAIOAuthControlServer = async (
 		if (!job) return { state: "idle" as const }
 		return {
 			id: job.id,
+			...(job.state === "awaiting_callback" && job.authorizationUrl
+				? { authorizationUrl: job.authorizationUrl }
+				: {}),
 			state: job.state,
 			...(job.state === "awaiting_user" && job.deviceCode
 				? {
@@ -116,6 +127,17 @@ export const startOpenAIOAuthControlServer = async (
 		res.end(JSON.stringify(body))
 	}
 
+	const readJson = async (
+		req: import("node:http").IncomingMessage,
+	): Promise<Record<string, unknown>> => {
+		const chunks: Buffer[] = []
+		for await (const chunk of req) chunks.push(Buffer.from(chunk))
+		const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
+		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
+			throw new Error("Invalid request")
+		return parsed as Record<string, unknown>
+	}
+
 	const isAuthorized = (authorization: string | undefined): boolean => {
 		if (!authorization?.startsWith("Bearer ")) return false
 		const provided = authorization.slice("Bearer ".length)
@@ -132,6 +154,80 @@ export const startOpenAIOAuthControlServer = async (
 		}
 
 		const url = new URL(req.url ?? "/", "http://localhost")
+		if (req.method === "POST" && url.pathname === "/browser-login") {
+			req.resume()
+			if (
+				currentLogin?.state === "starting" ||
+				currentLogin?.state === "awaiting_user" ||
+				currentLogin?.state === "awaiting_callback"
+			) {
+				sendJson(res, 409, loginSnapshot(currentLogin))
+				return
+			}
+			const request = await createOpenAIOAuthRequest({
+				redirectUri: "http://localhost:1455/auth/callback",
+				clientId: options.clientId,
+			})
+			const job: LoginJob = {
+				id: randomBytes(16).toString("hex"),
+				state: "awaiting_callback",
+				abort: new AbortController(),
+				authorizationUrl: request.authorizationUrl,
+				stateToken: request.state,
+				codeVerifier: request.codeVerifier,
+			}
+			currentLogin = job
+			sendJson(res, 202, loginSnapshot(job))
+			return
+		}
+		const callbackMatch =
+			req.method === "POST" &&
+			/^\/browser-login\/([a-f0-9]{32})\/callback$/.exec(url.pathname)
+		if (callbackMatch) {
+			const job = currentLogin
+			if (
+				!job ||
+				job.id !== callbackMatch[1] ||
+				job.state !== "awaiting_callback"
+			) {
+				req.resume()
+				sendJson(res, 409, { error: "No pending browser login" })
+				return
+			}
+			try {
+				const body = await readJson(req)
+				const callback = new URL(String(body.callbackUrl ?? ""))
+				if (
+					callback.origin !== "http://localhost:1455" ||
+					callback.pathname !== "/auth/callback" ||
+					callback.searchParams.get("state") !== job.stateToken
+				)
+					throw new Error("Invalid callback")
+				const code = callback.searchParams.get("code")
+				if (!code || !job.codeVerifier) throw new Error("Invalid callback")
+				const token = await exchangeOpenAIOAuthCode({
+					code,
+					codeVerifier: job.codeVerifier,
+					redirectUri: "http://localhost:1455/auth/callback",
+					clientId: options.clientId,
+					tokenUrl: options.tokenUrl,
+					fetch: fetchFn,
+				})
+				await saveAuthTokens({ token, authFilePath: options.authFilePath })
+				job.state = "complete"
+				job.stateToken = undefined
+				job.codeVerifier = undefined
+				job.authorizationUrl = undefined
+				sendJson(res, 200, loginSnapshot(job))
+			} catch {
+				job.state = "failed"
+				job.error = "Callback URL was invalid or sign-in failed."
+				job.stateToken = undefined
+				job.codeVerifier = undefined
+				sendJson(res, 400, loginSnapshot(job))
+			}
+			return
+		}
 		if (req.method === "GET" && url.pathname === "/status") {
 			sendJson(res, 200, {
 				credentialsConfigured: await credentialsConfigured(),

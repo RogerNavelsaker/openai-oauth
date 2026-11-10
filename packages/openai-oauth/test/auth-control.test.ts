@@ -194,4 +194,86 @@ describe("OpenAI OAuth control server", () => {
 		})
 		expect(JSON.stringify(status)).not.toContain("secret upstream detail")
 	})
+	test("validates and exchanges a pending browser callback URL", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-browser-control-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		const fetchMock = vi.fn<typeof fetch>(async () =>
+			response({
+				access_token: "browser-access-token",
+				refresh_token: "browser-refresh-token",
+				id_token: jwt({
+					"https://api.openai.com/auth": { chatgpt_account_id: "acct-browser" },
+				}),
+				expires_in: 3600,
+			}),
+		)
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			authFilePath,
+			fetch: fetchMock,
+		})
+		servers.push(server)
+		const started = await fetch(`${server.url}/browser-login`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(started.status).toBe(202)
+		const pending = (await started.json()) as {
+			id: string
+			authorizationUrl: string
+		}
+		const authUrl = new URL(pending.authorizationUrl)
+		const callback = new URL("http://localhost:1455/auth/callback")
+		callback.searchParams.set("code", "browser-code")
+		callback.searchParams.set("state", authUrl.searchParams.get("state")!)
+		const submitted = await fetch(
+			`${server.url}/browser-login/${pending.id}/callback`,
+			{
+				method: "POST",
+				headers: { ...authorized, "Content-Type": "application/json" },
+				body: JSON.stringify({ callbackUrl: callback.href }),
+			},
+		)
+		expect(submitted.status).toBe(200)
+		expect(await submitted.json()).toMatchObject({
+			id: pending.id,
+			state: "complete",
+		})
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		expect(JSON.parse(await readFile(authFilePath, "utf8"))).toMatchObject({
+			tokens: { access_token: "browser-access-token" },
+		})
+	})
+
+	test("rejects callback URLs with invalid state before token exchange", async () => {
+		const fetchMock = vi.fn<typeof fetch>()
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			fetch: fetchMock,
+		})
+		servers.push(server)
+		const started = await fetch(`${server.url}/browser-login`, {
+			method: "POST",
+			headers: authorized,
+		})
+		const pending = (await started.json()) as { id: string }
+		const submitted = await fetch(
+			`${server.url}/browser-login/${pending.id}/callback`,
+			{
+				method: "POST",
+				headers: { ...authorized, "Content-Type": "application/json" },
+				body: JSON.stringify({
+					callbackUrl:
+						"http://localhost:1455/auth/callback?code=bad&state=wrong",
+				}),
+			},
+		)
+		expect(submitted.status).toBe(400)
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
 })
