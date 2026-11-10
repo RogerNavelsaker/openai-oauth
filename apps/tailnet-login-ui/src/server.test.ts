@@ -27,6 +27,15 @@ afterEach(async () => {
 })
 
 describe("tailnet OAuth login UI", () => {
+	test("accepts loopback origins with an explicit port", async () => {
+		const server = await startLoginUiServer({
+			...options(async () => statusResponse("idle")),
+			publicOrigin: "http://127.0.0.1:11533",
+		})
+		servers.push(server)
+		expect(server.url).toMatch(/^http:\/\/127\.0\.0\.1:/)
+	})
+
 	test("proxies explicit sign-in server-side and keeps responses private", async () => {
 		let started = false
 		const sidecarFetch = vi.fn<typeof fetch>(async (input, init) => {

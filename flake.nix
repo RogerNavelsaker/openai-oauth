@@ -21,11 +21,12 @@
         src = source;
         nativeBuildInputs = [ bun ];
         outputHashMode = "recursive";
-        outputHash = "sha256-nyuKo2vXYGHOvQkai8xzhr5ZQItyfDT/eKNG4R8kTeQ=";
+        outputHash = "sha256-NSsg9/QzkP3fAmDyyk0G1f3ZCEsSHaI1l5TwFmXiz70=";
         buildPhase = ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"
           bun install --frozen-lockfile --no-save
+          bun install --cwd apps/tailnet-login-ui --frozen-lockfile --no-save
         '';
         installPhase = ''
           mkdir -p "$out"
@@ -55,6 +56,8 @@
         installPhase = ''
           mkdir -p "$out/lib/openai-oauth" "$out/bin" "$out/share/licenses/openai-oauth"
           cp -R packages scripts package.json turbo.json tsconfig.base.json "$out/lib/openai-oauth/"
+          mkdir -p "$out/lib/openai-oauth/apps"
+          cp -R apps/tailnet-login-ui "$out/lib/openai-oauth/apps/"
           cp -RL ${bunDeps}/node_modules/. "$out/lib/openai-oauth/node_modules/"
           cd "$out/lib/openai-oauth"
           mkdir -p .nix-bin
@@ -70,6 +73,7 @@
           export PATH="$PWD/.nix-bin:${bun}/bin:$PATH"
           export PATH="${pkgs.nodejs_24}/bin:$PATH"
           mkdir -p packages/local/node_modules/@openai-oauth packages/ai-sdk/node_modules/@openai-oauth packages/openai-oauth/node_modules/@openai-oauth
+          export PATH="$PWD/node_modules/.bin:$PATH"
           for package in local ai-sdk openai-oauth; do
             mkdir -p "packages/$package/node_modules/.bin"
             for tool in tsc tsup; do
@@ -83,6 +87,10 @@
           ln -s ../../../local packages/openai-oauth/node_modules/@openai-oauth/local
           ln -s ../../../ai-sdk packages/openai-oauth/node_modules/@openai-oauth/ai-sdk
           ${bun}/bin/bun "$out/lib/openai-oauth/node_modules/turbo/bin/turbo" run build --filter=openai-oauth
+          cd apps/tailnet-login-ui
+          mkdir -p dist
+          ${bun}/bin/bun ../../node_modules/@unocss/cli/bin/unocss.mjs "src/**/*.{html,ts}" --config uno.config.ts --out-file dist/styles.css --minify
+          cd "$out/lib/openai-oauth"
           makeWrapper ${bun}/bin/bun "$out/bin/openai-oauth" \
             --add-flags "run $out/lib/openai-oauth/packages/openai-oauth/src/cli.ts" \
             --prefix PATH : "${lib.makeBinPath [ bun ]}"
@@ -103,6 +111,12 @@
         text = ''
           #!${pkgs.dash}/bin/dash
           set -eu
+          if [ "''${OPENAI_OAUTH_LOGIN_UI:-0}" = "1" ]; then
+            export OPENAI_OAUTH_CLI_BIN="${openaiOauthCli}/bin/openai-oauth"
+            export BUN_BIN="${bun}/bin/bun"
+            export LOGIN_UI_SERVER_PATH="${openaiOauthCli}/lib/openai-oauth/apps/tailnet-login-ui/src/server.ts"
+            exec ${pkgs.bash}/bin/bash "${openaiOauthCli}/lib/openai-oauth/scripts/oci-entrypoint.sh" "$@"
+          fi
           exec ${openaiOauthCli}/bin/openai-oauth "$@"
         '';
       };
@@ -110,7 +124,7 @@
         name = "openai-oauth";
         tag = "v${version}";
         created = "1970-01-01T00:00:01Z";
-        contents = [ openaiOauthCli openaiOauthEntrypoint bun pkgs.cacert (pkgs.dockerTools.fakeNss.override {
+        contents = [ openaiOauthCli openaiOauthEntrypoint bun pkgs.bash pkgs.cacert (pkgs.dockerTools.fakeNss.override {
           extraPasswdLines = [ "openai-oauth:x:10001:10001:OpenAI OAuth:/data:/nonexistent" ];
           extraGroupLines = [ "openai-oauth:x:10001:" ];
         }) ];

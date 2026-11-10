@@ -93,7 +93,7 @@ const normalizeOptions = (options: LoginUiOptions): NormalizedOptions => {
 	if (
 		origin.origin !== options.publicOrigin.replace(/\/$/, "") ||
 		(origin.protocol !== "https:" &&
-			!["localhost", "127.0.0.1", "[::1]"].includes(origin.host))
+			!["localhost", "127.0.0.1", "[::1]"].includes(origin.hostname))
 	) {
 		throw new Error(
 			"LOGIN_UI_PUBLIC_ORIGIN must be an HTTPS origin (HTTP is allowed only on loopback).",

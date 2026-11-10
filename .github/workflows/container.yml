@@ -47,6 +47,31 @@ jobs:
           podman image inspect --format '{{.Config.Cmd}}' "$image:$tag" | grep -q -- '--device-auth'
           podman image inspect "$image:$tag" --format '{{range .Config.Env}}{{println .}}{{end}}' \
             | grep -Fxq 'CODEX_OPENAI_SERVER_LOG_TOKEN_REFRESH=1'
+          smoke_name="openai-oauth-login-ui-smoke"
+          smoke_token="0123456789abcdef0123456789abcdef"
+          cleanup() { podman rm --force "$smoke_name" >/dev/null 2>&1 || true; }
+          trap cleanup EXIT
+          podman run --detach --name "$smoke_name" --network=none \
+            --env OPENAI_OAUTH_LOGIN_UI=1 \
+            --env OPENAI_OAUTH_CONTROL_TOKEN="$smoke_token" \
+            --env OPENAI_OAUTH_CONTROL_HOST=127.0.0.1 \
+            --env OPENAI_OAUTH_CONTROL_PORT=10532 \
+            --env LOGIN_UI_HOST=127.0.0.1 \
+            --env LOGIN_UI_PORT=10533 \
+            --env LOGIN_UI_PUBLIC_ORIGIN=http://127.0.0.1:10533 \
+            "$image:$tag" --device-auth --host 127.0.0.1 --port 10531
+          ready=0
+          for attempt in {1..30}; do
+            if podman exec "$smoke_name" bun -e 'Promise.all([fetch("http://127.0.0.1:10533/"), fetch("http://127.0.0.1:10533/assets/styles.css")]).then(async ([page, styles]) => { const html = await page.text(); const css = await styles.text(); if (!page.ok || !html.includes("No credentials are configured yet.") || !styles.ok || css.length === 0) process.exit(1); }).catch(() => process.exit(1))'; then
+              ready=1
+              break
+            fi
+            sleep 1
+          done
+          if [[ "$ready" != 1 ]]; then
+            podman logs "$smoke_name"
+            exit 1
+          fi
       - name: Login to GHCR
         uses: docker/login-action@v3
         with:
