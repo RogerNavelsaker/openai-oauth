@@ -1,3 +1,4 @@
+import { randomBytes } from "node:crypto"
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
@@ -302,10 +303,18 @@ const writeAuthFile = async (
 	data: AuthFile,
 ): Promise<void> => {
 	await ensureDirectory(filePath)
-	await fs.writeFile(filePath, JSON.stringify(data, null, 2), {
-		encoding: "utf-8",
-		mode: 0o600,
-	})
+	const temporaryPath = `${filePath}.${process.pid}.${randomBytes(6).toString("hex")}.tmp`
+	try {
+		await fs.writeFile(temporaryPath, JSON.stringify(data, null, 2), {
+			encoding: "utf-8",
+			mode: 0o600,
+			flag: "wx",
+		})
+		await fs.chmod(temporaryPath, 0o600)
+		await fs.rename(temporaryPath, filePath)
+	} finally {
+		await fs.rm(temporaryPath, { force: true })
+	}
 }
 
 const withAuthFileLock = async <T>(

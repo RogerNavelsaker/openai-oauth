@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/web",
-	"version": "2.1.0",
+	"version": "2.1.1",
 	"description": "Browser credential storage and web utilities for openai-oauth.",
 	"keywords": [
 		"openai",
