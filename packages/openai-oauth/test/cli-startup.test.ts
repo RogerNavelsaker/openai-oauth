@@ -70,6 +70,25 @@ describe("device-auth server startup", () => {
 			await rm(root, { recursive: true, force: true })
 		}
 	})
+	test("defers missing-auth login when the control plane is enabled", async () => {
+		const root = await mkdtemp(
+			path.join(os.tmpdir(), "openai-oauth-control-startup-"),
+		)
+		const authFilePath = path.join(root, "missing-auth.json")
+		vi.stubEnv(
+			"OPENAI_OAUTH_CONTROL_TOKEN",
+			"control-token-for-tests-0123456789abcdef",
+		)
+
+		try {
+			await runCli(["--device-auth", "--oauth-file", authFilePath, "--detach"])
+			expect(runOpenAIOAuthDeviceCodeLogin).not.toHaveBeenCalled()
+			expect(startCliWorker).toHaveBeenCalledTimes(1)
+		} finally {
+			vi.unstubAllEnvs()
+			await rm(root, { recursive: true, force: true })
+		}
+	})
 
 	test("re-authenticates after a rejected refresh and retries startup once", async () => {
 		const root = await mkdtemp(path.join(os.tmpdir(), "openai-oauth-startup-"))

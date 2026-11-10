@@ -18,6 +18,7 @@ describe("OpenAI OAuth device-code login", () => {
 		const root = await mkdtemp(path.join(tmpdir(), "openai-oauth-device-"))
 		const authFilePath = path.join(root, "auth.json")
 		const messages: string[] = []
+		const deviceCodes: Array<{ verificationUrl: string; userCode: string }> = []
 		let pollRequests = 0
 		const idToken = jwt({
 			"https://api.openai.com/auth": { chatgpt_account_id: "acct-device" },
@@ -74,6 +75,7 @@ describe("OpenAI OAuth device-code login", () => {
 				fetch: fetchMock,
 				timeoutMs: 10_000,
 				onMessage: (message) => messages.push(message),
+				onDeviceCode: (code) => deviceCodes.push(code),
 			})
 
 			expect(fetchMock).toHaveBeenCalledTimes(4)
@@ -84,6 +86,12 @@ describe("OpenAI OAuth device-code login", () => {
 			)
 			expect(messages.join("\n")).toContain("ABCD-EFGH")
 			expect(messages.join("\n")).not.toContain("private-device-auth-id")
+			expect(deviceCodes).toEqual([
+				{
+					verificationUrl: "https://auth.openai.com/codex/device",
+					userCode: "ABCD-EFGH",
+				},
+			])
 			expect(JSON.parse(await readFile(authFilePath, "utf8"))).toMatchObject({
 				auth_mode: "chatgpt",
 				tokens: {

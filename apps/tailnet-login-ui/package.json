@@ -1,0 +1,24 @@
+{
+	"name": "@openai-oauth/tailnet-login-ui",
+	"version": "0.1.0",
+	"private": true,
+	"type": "module",
+	"scripts": {
+		"build": "unocss \"src/**/*.{html,ts}\" --config uno.config.ts --out-file dist/styles.css --minify",
+		"dev": "bun --watch src/server.ts",
+		"start": "bun src/server.ts",
+		"typecheck": "tsc --noEmit -p tsconfig.json",
+		"test": "vitest run"
+	},
+	"dependencies": {
+		"htmx.org": "^2.0.11",
+		"hyperscript.org": "^0.9.94"
+	},
+	"devDependencies": {
+		"@types/node": "^26.6.6",
+		"@unocss/cli": "^66.12.0",
+		"@unocss/preset-uno": "^66.12.0",
+		"typescript": "6.0.3",
+		"vitest": "^5.1.0"
+	}
+}

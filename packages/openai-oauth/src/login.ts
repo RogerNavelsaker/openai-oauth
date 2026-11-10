@@ -45,6 +45,7 @@ export type OpenAIOAuthLoginOptions = {
 	timeoutMs?: number
 	fetch?: typeof fetch
 	onMessage?: (message: string) => void
+	onDeviceCode?: (code: { verificationUrl: string; userCode: string }) => void
 	signal?: AbortSignal
 }
 
@@ -461,6 +462,7 @@ export const runOpenAIOAuthDeviceCodeLogin = async (
 				`Continue only if you started this login. The process waits for up to ${Math.ceil(timeoutMs / 60_000)} minutes.`,
 			].join("\n"),
 		)
+		options.onDeviceCode?.({ verificationUrl, userCode })
 
 		let authorizationCode: string | undefined
 		let codeVerifier: string | undefined

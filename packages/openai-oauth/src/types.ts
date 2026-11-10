@@ -113,12 +113,20 @@ export type OpenAIOAuthServerLogEvent =
 			requestId: string
 	  }
 
+export type OpenAIOAuthControlOptions = {
+	host?: string
+	port?: number
+	token: string
+	timeoutMs?: number
+}
+
 export type OpenAIOAuthServerOptions = LocalOpenAIOAuthOptions & {
 	host?: string
 	port?: number
 	models?: string[]
 	codexVersion?: string
 	requestLogger?: (event: OpenAIOAuthServerLogEvent) => void
+	authControl?: OpenAIOAuthControlOptions
 }
 
 export type RunningOpenAIOAuthServer = {
@@ -126,6 +134,7 @@ export type RunningOpenAIOAuthServer = {
 	host: string
 	port: number
 	url: string
+	controlUrl?: string
 	models: string[]
 	close: () => Promise<void>
 }

@@ -1,0 +1,246 @@
+import { createHash, randomBytes, timingSafeEqual } from "node:crypto"
+import { createServer, type Server as HttpServer } from "node:http"
+import type { AddressInfo } from "node:net"
+import { loadAuthTokens } from "@openai-oauth/local/auth-file"
+import { runOpenAIOAuthDeviceCodeLogin } from "./login.js"
+
+export type AuthControlServerOptions = {
+	host?: string
+	port?: number
+	token: string
+	authFilePath?: string
+	clientId?: string
+	tokenUrl?: string
+	timeoutMs?: number
+	fetch?: typeof fetch
+}
+
+type LoginState =
+	| "starting"
+	| "awaiting_user"
+	| "complete"
+	| "failed"
+	| "cancelled"
+
+type DeviceCode = {
+	verificationUrl: string
+	userCode: string
+}
+
+type LoginJob = {
+	id: string
+	state: LoginState
+	abort: AbortController
+	deviceCode?: DeviceCode
+	error?: string
+}
+
+const CONTROL_TOKEN_MIN_LENGTH = 32
+const DEFAULT_CONTROL_HOST = "127.0.0.1"
+const DEFAULT_CONTROL_PORT = 10532
+
+const responseHeaders = {
+	"Cache-Control": "no-store, private",
+	"Content-Type": "application/json; charset=utf-8",
+	"X-Content-Type-Options": "nosniff",
+} as const
+
+const safeLoginError = (error: unknown): string => {
+	const message = error instanceof Error ? error.message : ""
+	if (/timed out/i.test(message)) return "Sign-in timed out. Start a new login."
+	if (/cancelled/i.test(message)) return "Sign-in cancelled."
+	if (/device-code login is not enabled|HTTP 404/i.test(message)) {
+		return "Device-code sign-in is unavailable for this account."
+	}
+	return "Sign-in failed. Start a new login or check the sidecar logs."
+}
+
+const closeServer = async (server: HttpServer): Promise<void> => {
+	if (!server.listening) return
+	server.closeIdleConnections?.()
+	await new Promise<void>((resolve, reject) => {
+		server.close((error) => (error ? reject(error) : resolve()))
+	})
+}
+
+export const startOpenAIOAuthControlServer = async (
+	options: AuthControlServerOptions,
+) => {
+	if (Buffer.byteLength(options.token, "utf8") < CONTROL_TOKEN_MIN_LENGTH) {
+		throw new Error(
+			`The OpenAI OAuth control token must be at least ${CONTROL_TOKEN_MIN_LENGTH} bytes.`,
+		)
+	}
+	const host = options.host ?? DEFAULT_CONTROL_HOST
+	const port = options.port ?? DEFAULT_CONTROL_PORT
+	const expectedTokenHash = createHash("sha256").update(options.token).digest()
+	const fetchFn = options.fetch ?? globalThis.fetch.bind(globalThis)
+	let currentLogin: LoginJob | undefined
+
+	const loginSnapshot = (job: LoginJob | undefined) => {
+		if (!job) return { state: "idle" as const }
+		return {
+			id: job.id,
+			state: job.state,
+			...(job.state === "awaiting_user" && job.deviceCode
+				? {
+						verificationUrl: job.deviceCode.verificationUrl,
+						userCode: job.deviceCode.userCode,
+					}
+				: {}),
+			...(job.state === "failed" && job.error ? { error: job.error } : {}),
+		}
+	}
+
+	const credentialsConfigured = async (): Promise<boolean> => {
+		try {
+			await loadAuthTokens({
+				authFilePath: options.authFilePath,
+				clientId: options.clientId,
+				tokenUrl: options.tokenUrl,
+				fetch: fetchFn,
+				ensureFresh: false,
+			})
+			return true
+		} catch {
+			return false
+		}
+	}
+
+	const sendJson = (
+		res: import("node:http").ServerResponse,
+		status: number,
+		body: unknown,
+	) => {
+		res.writeHead(status, responseHeaders)
+		res.end(JSON.stringify(body))
+	}
+
+	const isAuthorized = (authorization: string | undefined): boolean => {
+		if (!authorization?.startsWith("Bearer ")) return false
+		const provided = authorization.slice("Bearer ".length)
+		if (provided.length === 0) return false
+		const providedHash = createHash("sha256").update(provided).digest()
+		return timingSafeEqual(expectedTokenHash, providedHash)
+	}
+
+	const server = createServer(async (req, res) => {
+		if (!isAuthorized(req.headers.authorization)) {
+			res.setHeader("WWW-Authenticate", 'Bearer realm="openai-oauth-control"')
+			sendJson(res, 401, { error: "Unauthorized" })
+			return
+		}
+
+		const url = new URL(req.url ?? "/", "http://localhost")
+		if (req.method === "GET" && url.pathname === "/status") {
+			sendJson(res, 200, {
+				credentialsConfigured: await credentialsConfigured(),
+				login: loginSnapshot(currentLogin),
+			})
+			return
+		}
+
+		if (req.method === "POST" && url.pathname === "/login") {
+			req.resume()
+			if (
+				currentLogin?.state === "starting" ||
+				currentLogin?.state === "awaiting_user"
+			) {
+				sendJson(res, 409, loginSnapshot(currentLogin))
+				return
+			}
+			const job: LoginJob = {
+				id: randomBytes(16).toString("hex"),
+				state: "starting",
+				abort: new AbortController(),
+			}
+			currentLogin = job
+			void runOpenAIOAuthDeviceCodeLogin({
+				authFilePath: options.authFilePath,
+				clientId: options.clientId,
+				tokenUrl: options.tokenUrl,
+				timeoutMs: options.timeoutMs,
+				fetch: fetchFn,
+				signal: job.abort.signal,
+				onMessage: () => undefined,
+				onDeviceCode: (deviceCode) => {
+					if (currentLogin !== job || job.abort.signal.aborted) return
+					job.deviceCode = deviceCode
+					job.state = "awaiting_user"
+				},
+			})
+				.then(() => {
+					if (currentLogin === job && !job.abort.signal.aborted) {
+						job.deviceCode = undefined
+						job.state = "complete"
+					}
+				})
+				.catch((error: unknown) => {
+					if (currentLogin !== job || job.abort.signal.aborted) return
+					job.deviceCode = undefined
+					job.error = safeLoginError(error)
+					job.state = "failed"
+				})
+			sendJson(res, 202, loginSnapshot(job))
+			return
+		}
+
+		const cancelMatch =
+			req.method === "POST" &&
+			/^\/login\/([a-f0-9]{32})\/cancel$/.exec(url.pathname)
+		if (cancelMatch) {
+			req.resume()
+			const job = currentLogin
+			if (!job || job.id !== cancelMatch[1]) {
+				sendJson(res, 404, { error: "Login not found" })
+				return
+			}
+			if (job.state !== "starting" && job.state !== "awaiting_user") {
+				sendJson(res, 409, loginSnapshot(job))
+				return
+			}
+			job.abort.abort()
+			job.deviceCode = undefined
+			job.state = "cancelled"
+			sendJson(res, 200, loginSnapshot(job))
+			return
+		}
+
+		req.resume()
+		sendJson(res, 404, { error: "Not found" })
+	})
+
+	await new Promise<void>((resolve, reject) => {
+		server.once("error", reject)
+		server.listen(port, host, () => {
+			server.off("error", reject)
+			resolve()
+		})
+	})
+	const address = server.address() as AddressInfo | null
+	if (!address) {
+		await closeServer(server)
+		throw new Error(
+			"OpenAI OAuth control listener address could not be resolved.",
+		)
+	}
+	const actualHost = address.address
+	const urlHost = actualHost.includes(":") ? `[${actualHost}]` : actualHost
+
+	return {
+		host: actualHost,
+		port: address.port,
+		url: `http://${urlHost}:${address.port}`,
+		close: async () => {
+			if (
+				currentLogin?.state === "starting" ||
+				currentLogin?.state === "awaiting_user"
+			) {
+				currentLogin.abort.abort()
+				currentLogin.state = "cancelled"
+				currentLogin.deviceCode = undefined
+			}
+			await closeServer(server)
+		},
+	}
+}

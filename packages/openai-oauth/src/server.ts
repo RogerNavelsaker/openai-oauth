@@ -9,6 +9,7 @@ import {
 	type OpenAIOAuthTransport,
 } from "@openai-oauth/core"
 import { openaiCredentials } from "@openai-oauth/local"
+import { startOpenAIOAuthControlServer } from "./auth-control.js"
 import { handleChatCompletionsRequest } from "./chat-completions.js"
 import {
 	handleImageEditRequest,
@@ -134,50 +135,79 @@ export const startOpenAIOAuthServer = async (
 	const host = settings.host ?? DEFAULT_HOST
 	const port = settings.port ?? DEFAULT_PORT
 	const runtime = createOpenAIOAuthRuntime(settings)
-	const models = await runtime.resolveModels()
-	const handler = runtime.handler
-	const server = createServer(async (req, res) => {
-		try {
-			const request = await toWebRequest(req, { host, port })
-			const response = await handler(request)
-			await writeWebResponse(res, response)
-		} catch (error) {
-			if (res.headersSent || res.writableEnded) {
-				res.destroy(error instanceof Error ? error : undefined)
-				return
+	const controlServer = settings.authControl
+		? await startOpenAIOAuthControlServer({
+				...settings.authControl,
+				authFilePath: settings.authFilePath,
+				clientId: settings.clientId,
+				tokenUrl: settings.tokenUrl,
+				fetch: settings.fetch,
+			})
+		: undefined
+
+	try {
+		let models: string[]
+		if (controlServer) {
+			try {
+				models = (await runtime.resolveModels()).map((model) => model.id)
+			} catch {
+				// Keep the login control plane available when credentials are absent or rejected.
+				models = []
 			}
-
-			const message =
-				error instanceof Error ? error.message : "Unexpected server error."
-			await writeWebResponse(res, toErrorResponse(message, 500, "server_error"))
+		} else {
+			models = (await runtime.resolveModels()).map((model) => model.id)
 		}
-	})
+		const handler = runtime.handler
+		const server = createServer(async (req, res) => {
+			try {
+				const request = await toWebRequest(req, { host, port })
+				const response = await handler(request)
+				await writeWebResponse(res, response)
+			} catch (error) {
+				if (res.headersSent || res.writableEnded) {
+					res.destroy(error instanceof Error ? error : undefined)
+					return
+				}
 
-	await new Promise<void>((resolve, reject) => {
-		server.once("error", reject)
-		server.listen(port, host, () => {
-			server.off("error", reject)
-			resolve()
+				const message =
+					error instanceof Error ? error.message : "Unexpected server error."
+				await writeWebResponse(
+					res,
+					toErrorResponse(message, 500, "server_error"),
+				)
+			}
 		})
-	})
 
-	const address = resolveAddress(server.address() as AddressInfo, host)
-	return {
-		server,
-		host: address.host,
-		port: address.port,
-		url: `http://${address.host}:${address.port}/v1`,
-		models: models.map((model) => model.id),
-		close: () =>
-			new Promise<void>((resolve, reject) => {
-				server.close((error) => {
-					if (error) {
-						reject(error)
-						return
+		await new Promise<void>((resolve, reject) => {
+			server.once("error", reject)
+			server.listen(port, host, () => {
+				server.off("error", reject)
+				resolve()
+			})
+		})
+
+		const address = resolveAddress(server.address() as AddressInfo, host)
+		return {
+			server,
+			host: address.host,
+			port: address.port,
+			url: `http://${address.host}:${address.port}/v1`,
+			...(controlServer ? { controlUrl: controlServer.url } : {}),
+			models,
+			close: async () => {
+				try {
+					await controlServer?.close()
+				} finally {
+					if (server.listening) {
+						await new Promise<void>((resolve, reject) => {
+							server.close((error) => (error ? reject(error) : resolve()))
+						})
 					}
-
-					resolve()
-				})
-			}),
+				}
+			},
+		}
+	} catch (error) {
+		await controlServer?.close().catch(() => undefined)
+		throw error
 	}
 }
