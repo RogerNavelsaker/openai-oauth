@@ -80,10 +80,17 @@ const dummyLogContext = {
 }
 const usage = {
 	inputTokens: 10,
+	inputTokenDetails: {
+		noCacheTokens: 7,
+		cacheReadTokens: 3,
+		cacheWriteTokens: undefined,
+	},
 	outputTokens: 20,
+	outputTokenDetails: {
+		textTokens: 16,
+		reasoningTokens: 4,
+	},
 	totalTokens: 30,
-	reasoningTokens: 4,
-	cachedInputTokens: 3,
 }
 
 describe("streamChatCompletions", () => {

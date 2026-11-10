@@ -7,7 +7,7 @@
       system = "x86_64-linux";
       pkgs = import nixpkgs { inherit system; };
       lib = pkgs.lib;
-      version = "2.1.0";
+      version = "2.1.1";
       bun = pkgs.bun;
       source = pkgs.lib.cleanSourceWith {
         src = ./.;
@@ -21,7 +21,7 @@
         src = source;
         nativeBuildInputs = [ bun ];
         outputHashMode = "recursive";
-        outputHash = "sha256-JTDi2B8gJsnn76LFyOxhujnhHNgxxUHLLs6SwYudjCg=";
+        outputHash = "sha256-nyuKo2vXYGHOvQkai8xzhr5ZQItyfDT/eKNG4R8kTeQ=";
         buildPhase = ''
           export HOME="$TMPDIR/home"
           mkdir -p "$HOME"

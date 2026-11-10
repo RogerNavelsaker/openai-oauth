@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/local",
-	"version": "2.1.0",
+	"version": "2.1.1",
 	"description": "Local Codex auth-file auth handle for openai-oauth.",
 	"keywords": [
 		"openai",
@@ -49,10 +49,10 @@
 		"proper-lockfile": "4.1.2"
 	},
 	"devDependencies": {
-		"@types/node": "20.17.24",
+		"@types/node": "26.6.6",
 		"@types/proper-lockfile": "4.1.4",
-		"typescript": "5.9.2",
-		"vitest": "4.1.12"
+		"typescript": "6.0.3",
+		"vitest": "5.1.0"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

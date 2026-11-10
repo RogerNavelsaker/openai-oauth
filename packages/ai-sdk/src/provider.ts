@@ -1,15 +1,15 @@
 import { createOpenAI } from "@ai-sdk/openai"
 import {
-	type ImageModelV3,
-	type LanguageModelV3,
-	type LanguageModelV3Content,
-	type LanguageModelV3FinishReason,
-	type LanguageModelV3ResponseMetadata,
-	type LanguageModelV3Usage,
+	type ImageModelV4,
+	type LanguageModelV4,
+	type LanguageModelV4Content,
+	type LanguageModelV4FinishReason,
+	type LanguageModelV4ResponseMetadata,
+	type LanguageModelV4Usage,
 	NoSuchModelError,
-	type ProviderV3,
-	type SharedV3ProviderMetadata,
-	type SharedV3Warning,
+	type ProviderV4,
+	type SharedV4ProviderMetadata,
+	type SharedV4Warning,
 } from "@ai-sdk/provider"
 import { withUserAgentSuffix } from "@ai-sdk/provider-utils"
 import {
@@ -28,7 +28,7 @@ export type OpenAIOAuthProviderSettings = {
 
 export type OpenAIOAuthProviderInput = OpenAIOAuthTransport | OpenAIOAuth
 
-const emptyUsage = (): LanguageModelV3Usage => ({
+const emptyUsage = (): LanguageModelV4Usage => ({
 	inputTokens: {
 		total: undefined,
 		noCache: undefined,
@@ -43,13 +43,13 @@ const emptyUsage = (): LanguageModelV3Usage => ({
 })
 
 const mergeProviderMetadata = (
-	left: SharedV3ProviderMetadata | undefined,
-	right: SharedV3ProviderMetadata | undefined,
-): SharedV3ProviderMetadata | undefined => {
+	left: SharedV4ProviderMetadata | undefined,
+	right: SharedV4ProviderMetadata | undefined,
+): SharedV4ProviderMetadata | undefined => {
 	if (left == null) return right
 	if (right == null) return left
 
-	const merged: SharedV3ProviderMetadata = { ...left }
+	const merged: SharedV4ProviderMetadata = { ...left }
 	for (const [provider, value] of Object.entries(right)) {
 		const existing = merged[provider]
 		merged[provider] = existing == null ? value : { ...existing, ...value }
@@ -58,42 +58,42 @@ const mergeProviderMetadata = (
 	return merged
 }
 
-class CodexResponsesLanguageModel implements LanguageModelV3 {
-	readonly specificationVersion = "v3" as const
+class CodexResponsesLanguageModel implements LanguageModelV4 {
+	readonly specificationVersion = "v4" as const
 	readonly provider: string
 	readonly modelId: string
-	readonly supportedUrls: LanguageModelV3["supportedUrls"]
+	readonly supportedUrls: LanguageModelV4["supportedUrls"]
 
-	constructor(private readonly model: LanguageModelV3) {
+	constructor(private readonly model: LanguageModelV4) {
 		this.provider = model.provider
 		this.modelId = model.modelId
 		this.supportedUrls = model.supportedUrls
 	}
 
 	doStream(
-		options: Parameters<LanguageModelV3["doStream"]>[0],
-	): ReturnType<LanguageModelV3["doStream"]> {
+		options: Parameters<LanguageModelV4["doStream"]>[0],
+	): ReturnType<LanguageModelV4["doStream"]> {
 		return this.model.doStream(options)
 	}
 
 	async doGenerate(
-		options: Parameters<LanguageModelV3["doGenerate"]>[0],
-	): Promise<Awaited<ReturnType<LanguageModelV3["doGenerate"]>>> {
+		options: Parameters<LanguageModelV4["doGenerate"]>[0],
+	): Promise<Awaited<ReturnType<LanguageModelV4["doGenerate"]>>> {
 		const streamResult = await this.model.doStream(options)
 		const reader = streamResult.stream.getReader()
 
-		const content: Array<LanguageModelV3Content> = []
-		const warnings: Array<SharedV3Warning> = []
-		const activeTextById = new Map<string, LanguageModelV3Content>()
-		const activeReasoningById = new Map<string, LanguageModelV3Content>()
+		const content: Array<LanguageModelV4Content> = []
+		const warnings: Array<SharedV4Warning> = []
+		const activeTextById = new Map<string, LanguageModelV4Content>()
+		const activeReasoningById = new Map<string, LanguageModelV4Content>()
 
-		let finishReason: LanguageModelV3FinishReason = {
+		let finishReason: LanguageModelV4FinishReason = {
 			unified: "other",
 			raw: undefined,
 		}
-		let usage: LanguageModelV3Usage = emptyUsage()
-		let providerMetadata: SharedV3ProviderMetadata | undefined
-		let responseMetadata: LanguageModelV3ResponseMetadata | undefined
+		let usage: LanguageModelV4Usage = emptyUsage()
+		let providerMetadata: SharedV4ProviderMetadata | undefined
+		let responseMetadata: LanguageModelV4ResponseMetadata | undefined
 
 		try {
 			while (true) {
@@ -118,7 +118,7 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 					}
 
 					case "text-start": {
-						const textPart: LanguageModelV3Content = {
+						const textPart: LanguageModelV4Content = {
 							type: "text",
 							text: "",
 							providerMetadata: part.providerMetadata,
@@ -132,7 +132,7 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 					case "text-delta": {
 						const existing = activeTextById.get(part.id)
 						if (existing == null) {
-							const textPart: LanguageModelV3Content = {
+							const textPart: LanguageModelV4Content = {
 								type: "text",
 								text: part.delta,
 								providerMetadata: part.providerMetadata,
@@ -163,7 +163,7 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 					}
 
 					case "reasoning-start": {
-						const reasoningPart: LanguageModelV3Content = {
+						const reasoningPart: LanguageModelV4Content = {
 							type: "reasoning",
 							text: "",
 							providerMetadata: part.providerMetadata,
@@ -177,7 +177,7 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 					case "reasoning-delta": {
 						const existing = activeReasoningById.get(part.id)
 						if (existing == null) {
-							const reasoningPart: LanguageModelV3Content = {
+							const reasoningPart: LanguageModelV4Content = {
 								type: "reasoning",
 								text: part.delta,
 								providerMetadata: part.providerMetadata,
@@ -207,6 +207,7 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 						break
 					}
 
+					case "ping":
 					case "tool-input-start":
 					case "tool-input-delta":
 					case "tool-input-end": {
@@ -216,6 +217,8 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 					case "tool-approval-request":
 					case "tool-call":
 					case "tool-result":
+					case "custom":
+					case "reasoning-file":
 					case "file":
 					case "source": {
 						content.push(part)
@@ -269,11 +272,11 @@ class CodexResponsesLanguageModel implements LanguageModelV3 {
 	}
 }
 
-export interface OpenAIOAuthProvider extends ProviderV3 {
-	(modelId: OpenAIOAuthModelId): LanguageModelV3
-	languageModel(modelId: OpenAIOAuthModelId): LanguageModelV3
-	image(modelId: OpenAIOAuthImageModelId): ImageModelV3
-	imageModel(modelId: OpenAIOAuthImageModelId): ImageModelV3
+export interface OpenAIOAuthProvider extends ProviderV4 {
+	(modelId: OpenAIOAuthModelId): LanguageModelV4
+	languageModel(modelId: OpenAIOAuthModelId): LanguageModelV4
+	image(modelId: OpenAIOAuthImageModelId): ImageModelV4
+	imageModel(modelId: OpenAIOAuthImageModelId): ImageModelV4
 }
 
 const isTransport = (
@@ -318,7 +321,7 @@ export const createOpenAIOAuth = (
 		provider.image(modelId)
 
 	const providerFn = (modelId: OpenAIOAuthModelId) => createModel(modelId)
-	const specificationVersion: ProviderV3["specificationVersion"] = "v3"
+	const specificationVersion: ProviderV4["specificationVersion"] = "v4"
 
 	return Object.assign(providerFn, {
 		specificationVersion,

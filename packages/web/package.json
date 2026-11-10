@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/web",
-	"version": "2.1.0",
+	"version": "2.1.1",
 	"description": "Browser credential storage and web utilities for openai-oauth.",
 	"keywords": [
 		"openai",
@@ -48,9 +48,9 @@
 		"@openai-oauth/core": "workspace:*"
 	},
 	"devDependencies": {
-		"fake-indexeddb": "6.2.5",
-		"typescript": "5.9.2",
-		"vitest": "4.1.12"
+		"fake-indexeddb": "6.2.8",
+		"typescript": "6.0.3",
+		"vitest": "5.1.0"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",

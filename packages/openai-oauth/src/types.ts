@@ -1,5 +1,6 @@
 import type { Server as HttpServer } from "node:http"
 import type { LocalOpenAIOAuthOptions } from "@openai-oauth/local"
+import type { LanguageModelUsage } from "ai"
 
 export type JsonValue =
 	| null
@@ -86,13 +87,7 @@ export type ChatRequestSummary = {
 	toolCount: number
 }
 
-type UsageLike = {
-	inputTokens?: number
-	outputTokens?: number
-	totalTokens?: number
-	reasoningTokens?: number
-	cachedInputTokens?: number
-}
+type UsageLike = LanguageModelUsage
 
 export type OpenAIOAuthServerLogEvent =
 	| ({

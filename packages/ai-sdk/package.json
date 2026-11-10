@@ -1,6 +1,6 @@
 {
 	"name": "@openai-oauth/ai-sdk",
-	"version": "2.1.0",
+	"version": "2.1.1",
 	"description": "Vercel AI SDK provider adapter for openai-oauth auth handles.",
 	"keywords": [
 		"openai",
@@ -41,21 +41,21 @@
 		"access": "public"
 	},
 	"peerDependencies": {
-		"ai": "^6.0.116"
+		"ai": "^7.0.0"
 	},
 	"dependencies": {
-		"@ai-sdk/openai": "3.0.134",
-		"@ai-sdk/provider": "3.0.19",
-		"@ai-sdk/provider-utils": "4.0.62",
+		"@ai-sdk/openai": "4.0.111",
+		"@ai-sdk/provider": "4.0.37",
+		"@ai-sdk/provider-utils": "5.0.76",
 		"@openai-oauth/core": "workspace:*"
 	},
 	"devDependencies": {
 		"@openai-oauth/local": "workspace:*",
-		"@types/node": "20.17.24",
-		"ai": "6.0.317",
-		"typescript": "5.9.2",
-		"vitest": "4.1.12",
-		"zod": "^4.6.6"
+		"@types/node": "26.6.6",
+		"ai": "7.0.165",
+		"typescript": "6.0.3",
+		"vitest": "5.1.0",
+		"zod": "^4.6.7"
 	},
 	"author": "EvanZhouDev",
 	"license": "Apache-2.0",
