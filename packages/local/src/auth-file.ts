@@ -87,6 +87,9 @@ export type SaveAuthTokensOptions = {
 	now?: () => Date
 }
 
+export type ClearAuthTokensOptions = {
+	authFilePath?: string
+}
 export type SavedAuthTokens = {
 	path: string
 	auth: EffectiveAuth
@@ -436,6 +439,20 @@ export const saveAuthTokens = async (
 				lastRefresh: savedAt,
 			},
 		}
+	})
+}
+export const clearAuthTokens = async (
+	options: ClearAuthTokensOptions,
+): Promise<void> => {
+	const filePath = resolveCodexAuthFilePath(options.authFilePath)
+	await withAuthFileLock(filePath, async (assertLock) => {
+		const existing = (await readAuthFile([filePath])).data ?? {}
+		const remaining: AuthFile = { ...existing }
+		delete remaining.auth_mode
+		delete remaining.tokens
+		delete remaining.last_refresh
+		assertLock()
+		await writeAuthFile(filePath, remaining)
 	})
 }
 

@@ -180,6 +180,8 @@ const parseControlStatus = (value: unknown): ControlStatus | undefined => {
 			? { accessTokenExpiresAt }
 			: {}),
 		accessTokenAppearsValid: value.accessTokenAppearsValid === true,
+		isNearExpiry: value.isNearExpiry === true,
+		refreshAvailable: value.refreshAvailable === true,
 		login,
 	}
 }
@@ -392,13 +394,14 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 		}
 		if (
 			req.method === "POST" &&
-			["/_start", "/_cancel"].includes(url.pathname)
+			["/_start", "/_cancel", "/_refresh", "/_sign-out"].includes(url.pathname)
 		) {
 			const form = await isValidPost(req, options)
 			if (!form) {
 				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
 				return
 			}
+			let notice: string | undefined
 			try {
 				if (url.pathname === "/_start") {
 					const response = await options.fetch(`${options.controlUrl}/login`, {
@@ -408,7 +411,7 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 					if (response.status !== 202 && response.status !== 409) {
 						throw new Error("control service unavailable")
 					}
-				} else {
+				} else if (url.pathname === "/_cancel") {
 					const id = form.get("id") ?? ""
 					if (!/^[a-f0-9]{32}$/.test(id)) {
 						send(res, 400, "Invalid login id", "text/plain; charset=utf-8")
@@ -422,10 +425,34 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 						},
 					)
 					if (!response.ok) throw new Error("control service unavailable")
+				} else {
+					const isRefresh = url.pathname === "/_refresh"
+					const response = await options.fetch(
+						`${options.controlUrl}/${isRefresh ? "refresh" : "sign-out"}`,
+						{
+							method: "POST",
+							headers: { Authorization: `Bearer ${options.controlToken}` },
+						},
+					)
+					notice = response.ok
+						? isRefresh
+							? "Refresh complete; the access token was renewed if needed."
+							: "Signed out. Saved local OAuth credentials were removed; the provider token was not revoked."
+						: isRefresh
+							? "Refresh failed. Sign out and sign in again, or check the sidecar logs."
+							: "Sign out failed. Check the sidecar logs and try again."
 				}
 				const csrf = csrfForRequest(req, res, options)
 				try {
-					send(res, 200, renderStatus(csrf, await fetchStatus(options)))
+					const updatedStatus = await fetchStatus(options)
+					send(
+						res,
+						200,
+						renderStatus(
+							csrf,
+							notice ? { ...updatedStatus, notice } : updatedStatus,
+						),
+					)
 				} catch {
 					send(res, 200, renderStatus(csrf, undefined, true))
 				}

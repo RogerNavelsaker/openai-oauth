@@ -6,7 +6,11 @@ import {
 	exchangeOpenAIOAuthCode,
 	parseJwtClaims,
 } from "@openai-oauth/core"
-import { loadAuthTokens, saveAuthTokens } from "@openai-oauth/local/auth-file"
+import {
+	clearAuthTokens,
+	loadAuthTokens,
+	saveAuthTokens,
+} from "@openai-oauth/local/auth-file"
 import { runOpenAIOAuthDeviceCodeLogin } from "./login.js"
 
 export type AuthControlServerOptions = {
@@ -44,6 +48,7 @@ type LoginJob = {
 	error?: string
 }
 
+const TOKEN_EXPIRY_WARNING_MS = 5 * 60 * 1000
 const CONTROL_TOKEN_MIN_LENGTH = 32
 const DEFAULT_CONTROL_HOST = "127.0.0.1"
 const DEFAULT_CONTROL_PORT = 10532
@@ -118,16 +123,29 @@ export const startOpenAIOAuthControlServer = async (
 				claims && typeof claims.exp === "number" && Number.isFinite(claims.exp)
 					? new Date(claims.exp * 1000)
 					: undefined
+			const expiresAt = expiry?.getTime()
+			const accessTokenAppearsValid =
+				expiresAt !== undefined && expiresAt > Date.now()
 			return {
 				credentialsConfigured: true,
 				...(auth.lastRefresh ? { credentialsUpdatedAt: auth.lastRefresh } : {}),
 				...(expiry && Number.isFinite(expiry.getTime())
 					? { accessTokenExpiresAt: expiry.toISOString() }
 					: {}),
-				accessTokenAppearsValid: expiry ? expiry.getTime() > Date.now() : false,
+				accessTokenAppearsValid,
+				isNearExpiry:
+					expiresAt !== undefined &&
+					accessTokenAppearsValid &&
+					expiresAt <= Date.now() + TOKEN_EXPIRY_WARNING_MS,
+				refreshAvailable: Boolean(auth.refreshToken),
 			}
 		} catch {
-			return { credentialsConfigured: false, accessTokenAppearsValid: false }
+			return {
+				credentialsConfigured: false,
+				accessTokenAppearsValid: false,
+				isNearExpiry: false,
+				refreshAvailable: false,
+			}
 		}
 	}
 
@@ -169,6 +187,10 @@ export const startOpenAIOAuthControlServer = async (
 		const url = new URL(req.url ?? "/", "http://localhost")
 		if (req.method === "POST" && url.pathname === "/browser-login") {
 			req.resume()
+			if ((await credentialsStatus()).credentialsConfigured) {
+				sendJson(res, 409, { error: "Sign out before starting a new sign-in." })
+				return
+			}
 			if (
 				currentLogin?.state === "starting" ||
 				currentLogin?.state === "awaiting_user" ||
@@ -249,8 +271,52 @@ export const startOpenAIOAuthControlServer = async (
 			return
 		}
 
+		if (req.method === "POST" && url.pathname === "/refresh") {
+			req.resume()
+			if (
+				currentLogin?.state === "starting" ||
+				currentLogin?.state === "awaiting_user" ||
+				currentLogin?.state === "awaiting_callback"
+			) {
+				sendJson(res, 409, { error: "Sign-in is in progress." })
+				return
+			}
+			try {
+				const auth = await loadAuthTokens({
+					authFilePath: options.authFilePath,
+					clientId: options.clientId,
+					tokenUrl: options.tokenUrl,
+					fetch: fetchFn,
+					ensureFresh: true,
+				})
+				sendJson(res, 200, { credentialsUpdatedAt: auth.lastRefresh })
+			} catch {
+				sendJson(res, 409, { error: "Refresh failed. Sign in again." })
+			}
+			return
+		}
+
+		if (req.method === "POST" && url.pathname === "/sign-out") {
+			req.resume()
+			if (
+				currentLogin?.state === "starting" ||
+				currentLogin?.state === "awaiting_user" ||
+				currentLogin?.state === "awaiting_callback"
+			) {
+				sendJson(res, 409, { error: "Cancel the active sign-in first." })
+				return
+			}
+			await clearAuthTokens({ authFilePath: options.authFilePath })
+			sendJson(res, 200, { credentialsConfigured: false })
+			return
+		}
+
 		if (req.method === "POST" && url.pathname === "/login") {
 			req.resume()
+			if ((await credentialsStatus()).credentialsConfigured) {
+				sendJson(res, 409, { error: "Sign out before starting a new sign-in." })
+				return
+			}
 			if (
 				currentLogin?.state === "starting" ||
 				currentLogin?.state === "awaiting_user"

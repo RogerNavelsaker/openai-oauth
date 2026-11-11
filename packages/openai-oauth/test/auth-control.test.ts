@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm } from "node:fs/promises"
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
 import { afterEach, describe, expect, test, vi } from "vitest"
@@ -56,6 +56,119 @@ describe("OpenAI OAuth control server", () => {
 		const response = await fetch(`${server.url}/status`)
 		expect(response.status).toBe(401)
 		expect(response.headers.get("cache-control")).toContain("no-store")
+	})
+
+	test("requires sign-out before beginning another sign-in", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-replacement-login-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		await writeFile(
+			authFilePath,
+			JSON.stringify({
+				tokens: {
+					access_token: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+					refresh_token: "refresh-token",
+					account_id: "acct-existing",
+				},
+			}),
+		)
+		const fetchMock = vi.fn<typeof fetch>()
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			authFilePath,
+			fetch: fetchMock,
+		})
+		servers.push(server)
+		const login = await fetch(`${server.url}/login`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(login.status).toBe(409)
+		expect(fetchMock).not.toHaveBeenCalled()
+	})
+
+	test("refreshes an access token that is close to expiry", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-refresh-action-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		const expiringAccessToken = jwt({ exp: Math.floor(Date.now() / 1000) + 30 })
+		await writeFile(
+			authFilePath,
+			JSON.stringify({
+				auth_mode: "chatgpt",
+				last_refresh: "2020-01-01T00:00:00.000Z",
+				tokens: {
+					access_token: expiringAccessToken,
+					refresh_token: "refresh-token",
+					account_id: "acct-refresh",
+				},
+			}),
+		)
+		const refreshedAccessToken = jwt({
+			exp: Math.floor(Date.now() / 1000) + 3600,
+		})
+		const fetchMock = vi.fn<typeof fetch>(async () =>
+			response({
+				access_token: refreshedAccessToken,
+				refresh_token: "rotated-refresh-token",
+				expires_in: 3600,
+			}),
+		)
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			authFilePath,
+			fetch: fetchMock,
+		})
+		servers.push(server)
+		const refreshed = await fetch(`${server.url}/refresh`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(refreshed.status).toBe(200)
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		expect(JSON.parse(await readFile(authFilePath, "utf8"))).toMatchObject({
+			tokens: {
+				access_token: refreshedAccessToken,
+				refresh_token: "rotated-refresh-token",
+			},
+		})
+	})
+
+	test("signs out by clearing local OAuth credentials while preserving other auth settings", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-sign-out-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		await writeFile(
+			authFilePath,
+			JSON.stringify({
+				auth_mode: "chatgpt",
+				OPENAI_API_KEY: "preserve",
+				last_refresh: "2026-11-10T00:00:00.000Z",
+				tokens: {
+					access_token: "secret-access",
+					refresh_token: "secret-refresh",
+				},
+			}),
+		)
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			authFilePath,
+		})
+		servers.push(server)
+		const response = await fetch(`${server.url}/sign-out`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(response.status).toBe(200)
+		expect(JSON.parse(await readFile(authFilePath, "utf8"))).toEqual({
+			OPENAI_API_KEY: "preserve",
+		})
 	})
 
 	test("completes device login without returning credentials or private device IDs", async () => {
@@ -122,6 +235,10 @@ describe("OpenAI OAuth control server", () => {
 	})
 
 	test("allows one active login and cancels it", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-active-login-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		await writeFile(authFilePath, "{}")
 		const fetchMock = vi.fn<typeof fetch>(async (input, init) => {
 			if (String(input).endsWith("/api/accounts/deviceauth/usercode")) {
 				return response({
@@ -142,6 +259,7 @@ describe("OpenAI OAuth control server", () => {
 			host: "127.0.0.1",
 			port: 0,
 			token: CONTROL_TOKEN,
+			authFilePath,
 			fetch: fetchMock,
 		})
 		servers.push(server)
@@ -170,6 +288,10 @@ describe("OpenAI OAuth control server", () => {
 	})
 
 	test("maps upstream failures to a fixed sanitized message", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-failed-login-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		await writeFile(authFilePath, "{}")
 		const fetchMock = vi.fn<typeof fetch>(async () =>
 			response({ error: "secret upstream detail" }, 500),
 		)
@@ -177,6 +299,7 @@ describe("OpenAI OAuth control server", () => {
 			host: "127.0.0.1",
 			port: 0,
 			token: CONTROL_TOKEN,
+			authFilePath,
 			fetch: fetchMock,
 		})
 		servers.push(server)
@@ -228,7 +351,9 @@ describe("OpenAI OAuth control server", () => {
 		const authUrl = new URL(pending.authorizationUrl)
 		const callback = new URL("http://localhost:1455/auth/callback")
 		callback.searchParams.set("code", "browser-code")
-		callback.searchParams.set("state", authUrl.searchParams.get("state")!)
+		const state = authUrl.searchParams.get("state")
+		if (!state) throw new Error("OAuth state missing from authorization URL.")
+		callback.searchParams.set("state", state)
 		const submitted = await fetch(
 			`${server.url}/browser-login/${pending.id}/callback`,
 			{
@@ -249,11 +374,16 @@ describe("OpenAI OAuth control server", () => {
 	})
 
 	test("rejects callback URLs with invalid state before token exchange", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-invalid-callback-"))
+		tempDirs.push(root)
+		const authFilePath = path.join(root, "auth.json")
+		await writeFile(authFilePath, "{}")
 		const fetchMock = vi.fn<typeof fetch>()
 		const server = await startOpenAIOAuthControlServer({
 			host: "127.0.0.1",
 			port: 0,
 			token: CONTROL_TOKEN,
+			authFilePath,
 			fetch: fetchMock,
 		})
 		servers.push(server)

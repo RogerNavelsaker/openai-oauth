@@ -107,6 +107,51 @@ describe("tailnet OAuth login UI", () => {
 			sidecarFetch.mock.calls.some(([, init]) => init?.method === "POST"),
 		).toBe(true)
 	})
+	test("proxies refresh and sign-out lifecycle actions with CSRF protection", async () => {
+		const mutations: string[] = []
+		const sidecarFetch = vi.fn<typeof fetch>(async (input, init) => {
+			const url = String(input)
+			if (url.endsWith("/status")) {
+				return Response.json({
+					credentialsConfigured: true,
+					accessTokenAppearsValid: true,
+					refreshAvailable: true,
+					login: { state: "idle" },
+				})
+			}
+			if (init?.method === "POST" && /\/(refresh|sign-out)$/.test(url)) {
+				mutations.push(url)
+				return Response.json({})
+			}
+			throw new Error(`Unexpected control request: ${url}`)
+		})
+		const server = await startLoginUiServer(options(sidecarFetch))
+		servers.push(server)
+
+		for (const [route, endpoint, expectedNotice] of [
+			["/_refresh", "/refresh", "Refresh complete"],
+			["/_sign-out", "/sign-out", "Signed out"],
+		] as const) {
+			const page = await globalThis.fetch(server.url)
+			const html = await page.text()
+			const cookie = page.headers.get("set-cookie")?.split(";", 1)[0]
+			const csrf = html.match(/name="csrf" value="([a-f0-9]{48})"/)?.[1]
+			const result = await globalThis.fetch(`${server.url}${route}`, {
+				method: "POST",
+				headers: {
+					Cookie: cookie ?? "",
+					Origin: "https://login.example.ts.net",
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+				body: new URLSearchParams({ csrf: csrf ?? "" }),
+			})
+			expect(result.status).toBe(200)
+			expect(await result.text()).toContain(expectedNotice)
+			expect(mutations.at(-1)).toBe(
+				`${options(sidecarFetch).controlUrl}${endpoint}`,
+			)
+		}
+	})
 
 	test("rejects cross-origin mutations before contacting the sidecar", async () => {
 		const sidecarFetch = vi.fn<typeof fetch>(async () => statusResponse("idle"))
@@ -147,7 +192,7 @@ describe("tailnet OAuth login UI", () => {
 		expect(fragment).not.toContain("Toggle code visibility")
 	})
 
-	test("renders credential status, readable timestamps, and matching sign-in buttons", () => {
+	test("renders credential status and lifecycle controls instead of direct replacement sign-in", () => {
 		const updatedAt = "2026-11-10T20:15:00.000Z"
 		const expiresAt = "2026-11-11T20:15:00.000Z"
 		const fragment = renderStatus("a".repeat(48), {
@@ -155,11 +200,12 @@ describe("tailnet OAuth login UI", () => {
 			credentialsUpdatedAt: updatedAt,
 			accessTokenExpiresAt: expiresAt,
 			accessTokenAppearsValid: true,
+			refreshAvailable: true,
 			login: { state: "idle" },
 		})
 		const buttonClasses = [
 			...fragment.matchAll(
-				/<button class="([^"]+)" type="submit">(?:Device-code|Browser)<\/button>/g,
+				/<button class="([^"]+)" type="submit">(Refresh|Sign out)<\/button>/g,
 			),
 		]
 		const readableUpdatedAt = new Intl.DateTimeFormat(undefined, {
@@ -171,7 +217,12 @@ describe("tailnet OAuth login UI", () => {
 			timeStyle: "short",
 		}).format(new Date(expiresAt))
 		expect(buttonClasses).toHaveLength(2)
-		expect(buttonClasses[0]?.[1]).toBe(buttonClasses[1]?.[1])
+		expect(buttonClasses[0]?.[2]).toBe("Refresh")
+		expect(buttonClasses[0]?.[1]).toContain("bg-emerald-400")
+		expect(buttonClasses[1]?.[2]).toBe("Sign out")
+		expect(buttonClasses[1]?.[1]).toContain("bg-red-500")
+		expect(fragment).not.toContain(">Device-code</button>")
+		expect(fragment).not.toContain("hx-confirm=")
 		expect(fragment).toContain(
 			`Credentials last updated: </dt><dd class="inline">${readableUpdatedAt}`,
 		)
@@ -179,7 +230,27 @@ describe("tailnet OAuth login UI", () => {
 			`Access token expiry: </dt><dd class="inline">${readableExpiresAt}`,
 		)
 		expect(fragment).toContain("bg-emerald-400")
-		expect(fragment.match(/hx-confirm=/g)).toHaveLength(2)
+	})
+
+	test("uses red, orange, and green token status colors for lifecycle state", () => {
+		const signedOut = renderStatus("a".repeat(48), {
+			credentialsConfigured: false,
+			login: { state: "idle" },
+		})
+		expect(signedOut).toContain("bg-red-500")
+		expect(signedOut).toContain(">Device-code</button>")
+		expect(signedOut).toContain("bg-emerald-400")
+
+		const expiring = renderStatus("a".repeat(48), {
+			credentialsConfigured: true,
+			accessTokenAppearsValid: true,
+			isNearExpiry: true,
+			refreshAvailable: true,
+			login: { state: "idle" },
+		})
+		expect(expiring).toContain("bg-orange-400")
+		expect(expiring).toContain(">Refresh</button>")
+		expect(expiring).toContain(">Sign out</button>")
 	})
 
 	test("escapes device codes before rendering them as HTML", () => {

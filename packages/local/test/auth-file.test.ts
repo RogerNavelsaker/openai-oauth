@@ -12,7 +12,11 @@ import {
 } from "@openai-oauth/core"
 import lockfile from "proper-lockfile"
 import { describe, expect, test, vi } from "vitest"
-import { loadAuthTokens, saveAuthTokens } from "../src/auth-file.js"
+import {
+	clearAuthTokens,
+	loadAuthTokens,
+	saveAuthTokens,
+} from "../src/auth-file.js"
 
 const encodeBase64Url = (value: Record<string, unknown>): string =>
 	Buffer.from(JSON.stringify(value)).toString("base64url")
@@ -197,6 +201,30 @@ describe("auth helpers", () => {
 					account_id: "acct-1",
 				},
 				last_refresh: "2025-01-01T00:00:00.000Z",
+			})
+			expect((await fs.stat(authPath)).mode & 0o777).toBe(0o600)
+		} finally {
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+})
+describe("clearAuthTokens", () => {
+	test("removes OAuth credentials but preserves unrelated auth fields", async () => {
+		const root = await fs.mkdtemp(path.join(os.tmpdir(), "auth-clear-"))
+		const authPath = path.join(root, "auth.json")
+		try {
+			await writeAuthFile(authPath, {
+				auth_mode: "chatgpt",
+				OPENAI_API_KEY: "keep-this-key",
+				custom_setting: true,
+				last_refresh: "2026-11-10T00:00:00.000Z",
+				tokens: { access_token: "access", refresh_token: "refresh" },
+			})
+			await clearAuthTokens({ authFilePath: authPath })
+			const saved = JSON.parse(await fs.readFile(authPath, "utf-8"))
+			expect(saved).toEqual({
+				OPENAI_API_KEY: "keep-this-key",
+				custom_setting: true,
 			})
 			expect((await fs.stat(authPath)).mode & 0o777).toBe(0o600)
 		} finally {
