@@ -87,6 +87,8 @@
           ln -s ../../../local packages/openai-oauth/node_modules/@openai-oauth/local
           ln -s ../../../ai-sdk packages/openai-oauth/node_modules/@openai-oauth/ai-sdk
           ${bun}/bin/bun "$out/lib/openai-oauth/node_modules/turbo/bin/turbo" run build --filter=openai-oauth
+          mkdir -p apps/tailnet-login-ui/node_modules/@openai-oauth
+          ln -s "$PWD/packages/local" apps/tailnet-login-ui/node_modules/@openai-oauth/local
           cd apps/tailnet-login-ui
           mkdir -p dist
           ${bun}/bin/bun ../../node_modules/@unocss/cli/bin/unocss.mjs "src/**/*.{html,ts}" --config uno.config.ts --out-file dist/styles.css --minify
