@@ -77,11 +77,9 @@ describe("tailnet OAuth login UI", () => {
 		expect(page.headers.get("content-security-policy")).toContain(
 			"frame-ancestors 'none'",
 		)
-		expect(html).toContain("Start device-code sign-in")
+		expect(html).toContain("Device-code")
 		expect(html).toContain("/assets/copy.js")
-		expect(html).toContain(
-			"Your credentials are stored securely and never shown here",
-		)
+		expect(html).toContain("Your credentials are never shown here")
 		expect(html).not.toContain(CONTROL_TOKEN)
 		expect(
 			sidecarFetch.mock.calls.some(([, init]) => init?.method === "POST"),
@@ -147,6 +145,41 @@ describe("tailnet OAuth login UI", () => {
 		expect(fragment).toContain("data-copy-device-code")
 		expect(fragment).toContain(">Copy code</button>")
 		expect(fragment).not.toContain("Toggle code visibility")
+	})
+
+	test("renders credential status, readable timestamps, and matching sign-in buttons", () => {
+		const updatedAt = "2026-11-10T20:15:00.000Z"
+		const expiresAt = "2026-11-11T20:15:00.000Z"
+		const fragment = renderStatus("a".repeat(48), {
+			credentialsConfigured: true,
+			credentialsUpdatedAt: updatedAt,
+			accessTokenExpiresAt: expiresAt,
+			accessTokenAppearsValid: true,
+			login: { state: "idle" },
+		})
+		const buttonClasses = [
+			...fragment.matchAll(
+				/<button class="([^"]+)" type="submit">(?:Device-code|Browser)<\/button>/g,
+			),
+		]
+		const readableUpdatedAt = new Intl.DateTimeFormat(undefined, {
+			dateStyle: "medium",
+			timeStyle: "short",
+		}).format(new Date(updatedAt))
+		const readableExpiresAt = new Intl.DateTimeFormat(undefined, {
+			dateStyle: "medium",
+			timeStyle: "short",
+		}).format(new Date(expiresAt))
+		expect(buttonClasses).toHaveLength(2)
+		expect(buttonClasses[0]?.[1]).toBe(buttonClasses[1]?.[1])
+		expect(fragment).toContain(
+			`Credentials last updated: </dt><dd class="inline">${readableUpdatedAt}`,
+		)
+		expect(fragment).toContain(
+			`Access token expiry: </dt><dd class="inline">${readableExpiresAt}`,
+		)
+		expect(fragment).toContain("bg-emerald-400")
+		expect(fragment.match(/hx-confirm=/g)).toHaveLength(2)
 	})
 
 	test("escapes device codes before rendering them as HTML", () => {
