@@ -11,6 +11,10 @@ import {
 	refreshOpenAIOAuthTokens,
 } from "@openai-oauth/core"
 import lockfile from "proper-lockfile"
+import type {
+	PersistentOAuthCredentials,
+	PersistentStore,
+} from "./persistence.js"
 
 const AUTH_FILENAME = "auth.json"
 const REFRESH_EXPIRY_MARGIN_MS = 5 * 60 * 1000
@@ -44,6 +48,7 @@ type RefreshReason =
 	| "access_token_missing"
 	| "access_token_expiring"
 	| "refresh_interval_elapsed"
+	| "forced_refresh"
 
 type RefreshLogContext = {
 	refreshReason: RefreshReason
@@ -75,6 +80,7 @@ export type AuthLoaderOptions = {
 	issuer?: string
 	tokenUrl?: string
 	authFilePath?: string
+	store?: PersistentStore
 	fetch: FetchFunction
 	ensureFresh?: boolean
 	now?: () => Date
@@ -84,11 +90,13 @@ export type AuthLoaderOptions = {
 export type SaveAuthTokensOptions = {
 	token: OpenAIOAuthTokenResponse
 	authFilePath?: string
+	store?: PersistentStore
 	now?: () => Date
 }
 
 export type ClearAuthTokensOptions = {
 	authFilePath?: string
+	store?: PersistentStore
 }
 export type SavedAuthTokens = {
 	path: string
@@ -409,6 +417,33 @@ export const saveAuthTokens = async (
 		)
 	}
 
+	if (options.store) {
+		const store = options.store
+		const savedAt = (options.now ?? (() => new Date()))().toISOString()
+		await store.withOAuthRefreshLock(async (assertLock) => {
+			assertLock()
+			store.saveOAuthCredentials({
+				accessToken: options.token.accessToken,
+				accountId,
+				isFedRamp: options.token.isFedRamp,
+				idToken: options.token.idToken,
+				refreshToken: options.token.refreshToken,
+				lastRefresh: savedAt,
+			})
+		})
+		return {
+			path: "encrypted auth database",
+			auth: {
+				accessToken: options.token.accessToken,
+				accountId,
+				isFedRamp: options.token.isFedRamp,
+				idToken: options.token.idToken,
+				refreshToken: options.token.refreshToken,
+				sourcePath: "encrypted database",
+				lastRefresh: savedAt,
+			},
+		}
+	}
 	return withAuthFileLock(filePath, async (assertLock) => {
 		const existing = (await readAuthFile([filePath])).data ?? {}
 		const now = options.now ?? (() => new Date())
@@ -444,6 +479,14 @@ export const saveAuthTokens = async (
 export const clearAuthTokens = async (
 	options: ClearAuthTokensOptions,
 ): Promise<void> => {
+	if (options.store) {
+		const store = options.store
+		await store.withOAuthRefreshLock(async (assertLock) => {
+			assertLock()
+			store.clearOAuthCredentials()
+		})
+		return
+	}
 	const filePath = resolveCodexAuthFilePath(options.authFilePath)
 	await withAuthFileLock(filePath, async (assertLock) => {
 		const existing = (await readAuthFile([filePath])).data ?? {}
@@ -492,9 +535,44 @@ const normalizeTokens = (tokens: StoredTokens | undefined): StoredTokens => {
 	}
 }
 
+export const readAuthFileCredentials = async (
+	authFilePath?: string,
+): Promise<EffectiveAuth | undefined> => {
+	const result = await readAuthFile(resolveAuthFileCandidates(authFilePath))
+	const authData = result.data ?? {}
+	const tokens = normalizeTokens(authData.tokens)
+	const accessToken = tokens.access_token
+	if (!accessToken) return undefined
+
+	const idToken = tokens.id_token
+	const accountId =
+		tokens.account_id ??
+		deriveAccountId(idToken) ??
+		deriveAccountId(accessToken)
+	if (!accountId) {
+		throw new Error("ChatGPT account id not found in auth.json.")
+	}
+
+	return {
+		accessToken,
+		accountId,
+		isFedRamp:
+			deriveChatGptAccountIsFedRamp(idToken) ||
+			deriveChatGptAccountIsFedRamp(accessToken) ||
+			false,
+		idToken,
+		refreshToken: tokens.refresh_token,
+		sourcePath: result.path ?? resolveWritePath(authFilePath),
+		lastRefresh: authData.last_refresh,
+	}
+}
+
 export const loadAuthTokens = async (
 	options: AuthLoaderOptions,
 ): Promise<EffectiveAuth> => {
+	if (options.store) {
+		return loadPersistentAuthTokens({ ...options, store: options.store })
+	}
 	const {
 		clientId,
 		issuer,
@@ -713,4 +791,221 @@ export const loadAuthTokens = async (
 		sourcePath: readResult.path ?? resolveWritePath(authFilePath),
 		lastRefresh,
 	}
+}
+
+const persistentAuthFromCredentials = (
+	credentials: PersistentOAuthCredentials | undefined,
+): EffectiveAuth => {
+	if (!credentials?.accessToken) {
+		throw new Error(
+			"OAuth credentials are not configured in the encrypted auth database.",
+		)
+	}
+	if (!credentials.accountId) {
+		throw new Error(
+			"OAuth account id is missing from the encrypted auth database.",
+		)
+	}
+	return {
+		accessToken: credentials.accessToken,
+		accountId: credentials.accountId,
+		isFedRamp: credentials.isFedRamp,
+		idToken: credentials.idToken,
+		refreshToken: credentials.refreshToken,
+		sourcePath: "encrypted database",
+		lastRefresh: credentials.lastRefresh,
+	}
+}
+
+const loadPersistentAuthTokens = async (
+	options: AuthLoaderOptions & { store: PersistentStore },
+): Promise<EffectiveAuth> => {
+	const {
+		store,
+		fetch,
+		clientId,
+		issuer,
+		tokenUrl,
+		now = () => new Date(),
+	} = options
+	const initial = store.getOAuthCredentials()
+	if (!initial) return persistentAuthFromCredentials(initial)
+	const initialContext = getRefreshContext(
+		initial.accessToken,
+		initial.lastRefresh,
+		now(),
+	)
+	if (!options.ensureFresh || !initialContext) {
+		return persistentAuthFromCredentials(initial)
+	}
+	if (!initial.refreshToken) {
+		throw new Error(
+			"OAuth refresh token is missing from the encrypted auth database.",
+		)
+	}
+	const startingGeneration = initial.refreshGeneration ?? 0
+
+	return store.withOAuthRefreshLock(async (assertLock) => {
+		const latest = store.getOAuthCredentials()
+		if (!latest) return persistentAuthFromCredentials(latest)
+		if ((latest.refreshGeneration ?? 0) > startingGeneration) {
+			return persistentAuthFromCredentials(latest)
+		}
+		const refreshContext = getRefreshContext(
+			latest.accessToken,
+			latest.lastRefresh,
+			now(),
+		)
+		if (!refreshContext) return persistentAuthFromCredentials(latest)
+		if (!latest.refreshToken) {
+			throw new Error(
+				"OAuth refresh token is missing from the encrypted auth database.",
+			)
+		}
+
+		const startedAt = Date.now()
+		emitTokenRefreshLog(options.onTokenRefreshLog, {
+			type: "token_refresh_started",
+			...refreshContext,
+		})
+		try {
+			const refreshed = await refreshChatGptTokens(
+				latest.refreshToken,
+				clientId,
+				issuer,
+				tokenUrl,
+				fetch,
+			)
+			const idToken = refreshed.idToken ?? latest.idToken
+			const accountId =
+				refreshed.accountId ??
+				latest.accountId ??
+				deriveAccountId(idToken) ??
+				deriveAccountId(refreshed.accessToken)
+			if (!accountId) {
+				throw new Error(
+					"ChatGPT account id not found in OpenAI OAuth token response.",
+				)
+			}
+			const refreshedAt = now().toISOString()
+			assertLock()
+			store.saveOAuthCredentials({
+				accessToken: refreshed.accessToken,
+				accountId,
+				isFedRamp:
+					deriveChatGptAccountIsFedRamp(idToken) ||
+					deriveChatGptAccountIsFedRamp(refreshed.accessToken) ||
+					refreshed.isFedRamp === true,
+				idToken,
+				refreshToken: refreshed.refreshToken ?? latest.refreshToken,
+				lastRefresh: refreshedAt,
+				refreshGeneration: (latest.refreshGeneration ?? 0) + 1,
+			})
+			emitTokenRefreshLog(options.onTokenRefreshLog, {
+				type: "token_refresh_succeeded",
+				durationMs: Date.now() - startedAt,
+				...refreshContext,
+			})
+			return persistentAuthFromCredentials(store.getOAuthCredentials())
+		} catch (error) {
+			emitTokenRefreshLog(options.onTokenRefreshLog, {
+				type: "token_refresh_failed",
+				durationMs: Date.now() - startedAt,
+				...refreshContext,
+				errorName:
+					error instanceof Error && error.name ? error.name : "UnknownError",
+			})
+			throw error
+		}
+	})
+}
+
+export const forceRefreshAuthTokens = async (
+	options: AuthLoaderOptions & { store: PersistentStore },
+): Promise<EffectiveAuth> => {
+	const {
+		store,
+		fetch,
+		clientId,
+		issuer,
+		tokenUrl,
+		now = () => new Date(),
+	} = options
+	if (typeof fetch !== "function") {
+		throw new Error(
+			"A fetch implementation is required to refresh ChatGPT tokens.",
+		)
+	}
+	const initial = store.getOAuthCredentials()
+	if (!initial) return persistentAuthFromCredentials(initial)
+	const startingGeneration = initial.refreshGeneration ?? 0
+	const refreshContext: RefreshLogContext = { refreshReason: "forced_refresh" }
+
+	return store.withOAuthRefreshLock(async (assertLock) => {
+		const latest = store.getOAuthCredentials()
+		if (!latest) return persistentAuthFromCredentials(latest)
+		if ((latest.refreshGeneration ?? 0) > startingGeneration) {
+			return persistentAuthFromCredentials(latest)
+		}
+		if (!latest.refreshToken) {
+			throw new Error(
+				"OAuth refresh token is missing from the encrypted auth database.",
+			)
+		}
+
+		const startedAt = Date.now()
+		emitTokenRefreshLog(options.onTokenRefreshLog, {
+			type: "token_refresh_started",
+			...refreshContext,
+		})
+		try {
+			const refreshed = await refreshChatGptTokens(
+				latest.refreshToken,
+				clientId,
+				issuer,
+				tokenUrl,
+				fetch,
+			)
+			const idToken = refreshed.idToken ?? latest.idToken
+			const accountId =
+				refreshed.accountId ??
+				latest.accountId ??
+				deriveAccountId(idToken) ??
+				deriveAccountId(refreshed.accessToken)
+			if (!accountId) {
+				throw new Error(
+					"ChatGPT account id not found in OpenAI OAuth token response.",
+				)
+			}
+			const refreshedAt = now().toISOString()
+			assertLock()
+			store.saveOAuthCredentials({
+				accessToken: refreshed.accessToken,
+				accountId,
+				isFedRamp:
+					deriveChatGptAccountIsFedRamp(idToken) ||
+					deriveChatGptAccountIsFedRamp(refreshed.accessToken) ||
+					refreshed.isFedRamp === true,
+				idToken,
+				refreshToken: refreshed.refreshToken ?? latest.refreshToken,
+				lastRefresh: refreshedAt,
+				refreshGeneration: (latest.refreshGeneration ?? 0) + 1,
+			})
+			emitTokenRefreshLog(options.onTokenRefreshLog, {
+				type: "token_refresh_succeeded",
+				durationMs: Date.now() - startedAt,
+				...refreshContext,
+			})
+			return persistentAuthFromCredentials(store.getOAuthCredentials())
+		} catch (error) {
+			emitTokenRefreshLog(options.onTokenRefreshLog, {
+				type: "token_refresh_failed",
+				durationMs: Date.now() - startedAt,
+				...refreshContext,
+				errorName:
+					error instanceof Error && error.name ? error.name : "UnknownError",
+			})
+			throw error
+		}
+	})
 }

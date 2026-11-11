@@ -1,6 +1,8 @@
 import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises"
 import { tmpdir } from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
+import { openPersistentStore } from "@openai-oauth/local/persistence"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import { startOpenAIOAuthControlServer } from "../src/auth-control.js"
 
@@ -34,9 +36,11 @@ const waitForState = async (
 describe("OpenAI OAuth control server", () => {
 	const servers: Array<{ close: () => Promise<void> }> = []
 	const tempDirs: string[] = []
+	const stores: Array<{ close: () => void }> = []
 
 	afterEach(async () => {
 		await Promise.all(servers.splice(0).map((server) => server.close()))
+		for (const store of stores.splice(0)) store.close()
 		await Promise.all(
 			tempDirs
 				.splice(0)
@@ -138,6 +142,146 @@ describe("OpenAI OAuth control server", () => {
 		})
 	})
 
+	test("forces a provider refresh and serializes concurrent requests across store handles", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-db-refresh-"))
+		tempDirs.push(root)
+		const databaseUrl = pathToFileURL(path.join(root, "auth.db")).href
+		const encryptionKey = "b".repeat(64)
+		const store = await openPersistentStore({ databaseUrl, encryptionKey })
+		const secondStore = await openPersistentStore({
+			databaseUrl,
+			encryptionKey,
+		})
+		stores.push(store, secondStore)
+		store.saveOAuthCredentials({
+			accessToken: jwt({ exp: Math.floor(Date.now() / 1000) + 3600 }),
+			accountId: "acct-db-refresh",
+			refreshToken: "initial-refresh-token",
+			lastRefresh: new Date().toISOString(),
+		})
+
+		let markStarted!: () => void
+		const refreshStarted = new Promise<void>((resolve) => {
+			markStarted = resolve
+		})
+		let completeRefresh!: (value: Response) => void
+		const pendingResponse = new Promise<Response>((resolve) => {
+			completeRefresh = resolve
+		})
+		const refreshedAccessToken = jwt({
+			exp: Math.floor(Date.now() / 1000) + 3600,
+		})
+		const fetchMock = vi.fn<typeof fetch>(async () => {
+			markStarted()
+			return pendingResponse
+		})
+		const firstServer = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			store,
+			fetch: fetchMock,
+		})
+		const secondServer = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			store: secondStore,
+			fetch: fetchMock,
+		})
+		servers.push(firstServer, secondServer)
+
+		const firstRequest = fetch(`${firstServer.url}/refresh`, {
+			method: "POST",
+			headers: authorized,
+		})
+		await refreshStarted
+		const secondRequest = fetch(`${secondServer.url}/refresh`, {
+			method: "POST",
+			headers: authorized,
+		})
+		await new Promise((resolve) => setTimeout(resolve, 25))
+		completeRefresh(
+			response({
+				access_token: refreshedAccessToken,
+				refresh_token: "rotated-refresh-token",
+				expires_in: 3600,
+			}),
+		)
+		const responses = await Promise.all([firstRequest, secondRequest])
+		for (const result of responses) expect(result.status).toBe(200)
+		expect(fetchMock).toHaveBeenCalledTimes(1)
+		expect(secondStore.getOAuthCredentials()).toMatchObject({
+			accessToken: refreshedAccessToken,
+			refreshToken: "rotated-refresh-token",
+		})
+		const signedOut = await fetch(`${firstServer.url}/sign-out`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(signedOut.status).toBe(200)
+		expect(secondStore.getOAuthCredentials()).toBeUndefined()
+	})
+
+	test("creates, lists, and revokes API keys without persisting or relisting plaintext", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-api-keys-"))
+		tempDirs.push(root)
+		const store = await openPersistentStore({
+			databaseUrl: pathToFileURL(path.join(root, "auth.db")).href,
+			encryptionKey: "d".repeat(64),
+		})
+		stores.push(store)
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			store,
+		})
+		servers.push(server)
+
+		const createdResponse = await fetch(`${server.url}/api-keys`, {
+			method: "POST",
+			headers: { ...authorized, "Content-Type": "application/json" },
+			body: JSON.stringify({ label: "Bifrost" }),
+		})
+		expect(createdResponse.status).toBe(201)
+		const created = (await createdResponse.json()) as {
+			id: string
+			label: string
+			apiKey: string
+			prefix: string
+		}
+		expect(created.apiKey).toMatch(/^sk-oai-oauth-[A-Za-z0-9_-]{43}$/)
+		expect(created).toMatchObject({
+			label: "Bifrost",
+			prefix: created.apiKey.slice(0, 16),
+		})
+		expect(store.verifyApiKey(created.apiKey)).toBe(true)
+		const verifier = store.database
+			.prepare("SELECT verifier FROM api_keys WHERE id = ?")
+			.get(created.id) as { verifier: string }
+		expect(verifier.verifier).not.toBe(created.apiKey)
+
+		const listResponse = await fetch(`${server.url}/api-keys`, {
+			headers: authorized,
+		})
+		const listed = await listResponse.text()
+		expect(listResponse.status).toBe(200)
+		expect(listed).toContain("Bifrost")
+		expect(listed).not.toContain(created.apiKey)
+		expect(listed).not.toContain("verifier")
+
+		const revokedResponse = await fetch(
+			`${server.url}/api-keys/${created.id}`,
+			{
+				method: "DELETE",
+				headers: authorized,
+			},
+		)
+		expect(revokedResponse.status).toBe(200)
+		expect(store.verifyApiKey(created.apiKey)).toBe(false)
+	})
+
 	test("signs out by clearing local OAuth credentials while preserving other auth settings", async () => {
 		const root = await mkdtemp(path.join(tmpdir(), "oauth-sign-out-"))
 		tempDirs.push(root)
@@ -231,6 +375,60 @@ describe("OpenAI OAuth control server", () => {
 		expect(pollCount).toBeGreaterThan(0)
 		expect(JSON.parse(await readFile(authFilePath, "utf8"))).toMatchObject({
 			tokens: { access_token: "secret-access-token" },
+		})
+	})
+
+	test("persists device-code login credentials in the encrypted store", async () => {
+		const root = await mkdtemp(path.join(tmpdir(), "oauth-db-login-"))
+		tempDirs.push(root)
+		const store = await openPersistentStore({
+			databaseUrl: pathToFileURL(path.join(root, "auth.db")).href,
+			encryptionKey: "c".repeat(64),
+		})
+		stores.push(store)
+		const idToken = jwt({
+			"https://api.openai.com/auth": { chatgpt_account_id: "acct-db-login" },
+		})
+		const fetchMock = vi.fn<typeof fetch>(async (input) => {
+			const url = String(input)
+			if (url.endsWith("/api/accounts/deviceauth/usercode")) {
+				return response({
+					device_auth_id: "private-device-id",
+					user_code: "TEST-CODE",
+					interval: 0.001,
+				})
+			}
+			if (url.endsWith("/api/accounts/deviceauth/token")) {
+				return response({
+					authorization_code: "authorization-code",
+					code_verifier: "server-issued-verifier",
+				})
+			}
+			return response({
+				access_token: "database-login-access",
+				refresh_token: "database-login-refresh",
+				id_token: idToken,
+				expires_in: 3600,
+			})
+		})
+		const server = await startOpenAIOAuthControlServer({
+			host: "127.0.0.1",
+			port: 0,
+			token: CONTROL_TOKEN,
+			store,
+			fetch: fetchMock,
+		})
+		servers.push(server)
+		const start = await fetch(`${server.url}/login`, {
+			method: "POST",
+			headers: authorized,
+		})
+		expect(start.status).toBe(202)
+		await waitForState(server.url, "complete")
+		expect(store.getOAuthCredentials()).toMatchObject({
+			accessToken: "database-login-access",
+			refreshToken: "database-login-refresh",
+			accountId: "acct-db-login",
 		})
 	})
 

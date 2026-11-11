@@ -1,3 +1,7 @@
+import { isAbsolute, resolve } from "node:path"
+import { pathToFileURL } from "node:url"
+import type { PersistentStore } from "@openai-oauth/local/persistence"
+import { openPersistentStore } from "@openai-oauth/local/persistence"
 import { cliMessages } from "./cli-logging.js"
 import {
 	type ActiveCliRuntime,
@@ -27,6 +31,27 @@ const isWorkerCommand = (value: unknown): value is WorkerCommand => {
 	return type === "openai-oauth:detach" || type === "openai-oauth:stop"
 }
 
+const openPersistentStoreFromEnvironment = async (): Promise<
+	PersistentStore | undefined
+> => {
+	const databasePath = process.env.OPENAI_OAUTH_DATABASE_PATH
+	const encryptionKey = process.env.OPENAI_OAUTH_DATABASE_KEY
+	if (databasePath === undefined && encryptionKey === undefined)
+		return undefined
+	if (!databasePath || !encryptionKey) {
+		throw new Error(
+			"OPENAI_OAUTH_DATABASE_PATH and OPENAI_OAUTH_DATABASE_KEY must both be configured.",
+		)
+	}
+	if (!isAbsolute(databasePath)) {
+		throw new Error("OPENAI_OAUTH_DATABASE_PATH must be an absolute path.")
+	}
+	return openPersistentStore({
+		databaseUrl: pathToFileURL(resolve(databasePath)).href,
+		encryptionKey,
+	})
+}
+
 const startCliInstance = async (
 	options: OpenAIOAuthServerOptions,
 	mode: CliRuntimeMode,
@@ -36,6 +61,7 @@ const startCliInstance = async (
 	server: RunningOpenAIOAuthServer
 	runtime: ActiveCliRuntime
 	models: string[]
+	store?: PersistentStore
 }> => {
 	const lock = await acquireCliRuntimeLock()
 	let server: RunningOpenAIOAuthServer | undefined
@@ -48,7 +74,7 @@ const startCliInstance = async (
 			version,
 			onStop: onRemoteStop,
 		})
-		return { server, runtime, models: server.models }
+		return { server, runtime, models: server.models, store: options.store }
 	} catch (error) {
 		await server?.close().catch(() => undefined)
 		await lock.release()
@@ -83,15 +109,25 @@ export const runCliWorker = async (
 
 		await instance?.server.close().catch(() => undefined)
 		await instance?.runtime.close().catch(() => undefined)
+		instance?.store?.close()
 		if (process.connected) {
 			process.disconnect?.()
 		}
 		process.exit(0)
 	}
 
-	instance = await startCliInstance(options, initialMode, version, () =>
-		shutdown("remote"),
-	)
+	const store = options.store ?? (await openPersistentStoreFromEnvironment())
+	try {
+		instance = await startCliInstance(
+			store ? { ...options, store } : options,
+			initialMode,
+			version,
+			() => shutdown("remote"),
+		)
+	} catch (error) {
+		if (!options.store) store?.close()
+		throw error
+	}
 
 	const onMessage = (value: unknown) => {
 		if (!isWorkerCommand(value) || stopping) {

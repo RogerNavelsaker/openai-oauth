@@ -1,6 +1,8 @@
 import { promises as fs } from "node:fs"
 import os from "node:os"
 import path from "node:path"
+import { pathToFileURL } from "node:url"
+import { openPersistentStore } from "@openai-oauth/local/persistence"
 import { afterEach, describe, expect, test, vi } from "vitest"
 import {
 	createOpenAIOAuthFetchHandler,
@@ -69,6 +71,74 @@ describe("openai oauth server", () => {
 			await fs.rm(root, { recursive: true, force: true })
 		}
 	})
+	test("requires an active API key for every inference route and keeps health public", async () => {
+		const root = await fs.mkdtemp(
+			path.join(os.tmpdir(), "oauth-api-key-server-"),
+		)
+		const store = await openPersistentStore({
+			databaseUrl: pathToFileURL(path.join(root, "auth.db")).href,
+			encryptionKey: "e".repeat(64),
+		})
+		const apiKey = `sk-oai-oauth-${"y".repeat(43)}`
+		const keyMetadata = store.createApiKey({
+			id: "key-123",
+			label: "test client",
+			prefix: apiKey.slice(0, 16),
+			token: apiKey,
+		})
+		let server: Awaited<ReturnType<typeof startOpenAIOAuthServer>> | undefined
+		const upstreamFetch = vi.fn<typeof globalThis.fetch>(async () => {
+			throw new Error("static model route should not call upstream")
+		})
+		try {
+			server = await startOpenAIOAuthServer({
+				host: "127.0.0.1",
+				port: 0,
+				models: ["gpt-6-luna"],
+				store,
+				fetch: upstreamFetch,
+			})
+			const apiBaseUrl = server.url.slice(0, -3)
+			const inferenceRequests = [
+				["/v1/models", "GET"],
+				["/v1/responses", "POST"],
+				["/v1/chat/completions", "POST"],
+				["/v1/images/generations", "POST"],
+				["/v1/images/edits", "POST"],
+			] as const
+			for (const [route, method] of inferenceRequests) {
+				const response = await fetch(`${apiBaseUrl}${route}`, {
+					method,
+					...(method === "POST" ? { body: "{}" } : {}),
+				})
+				expect(response.status).toBe(401)
+				expect(response.headers.get("www-authenticate")).toContain("Bearer")
+				await expect(response.json()).resolves.toMatchObject({
+					error: { code: "invalid_api_key" },
+				})
+			}
+
+			const valid = await fetch(`${server.url}/models`, {
+				headers: { Authorization: `bearer ${apiKey}` },
+			})
+			expect(valid.status).toBe(200)
+			expect(await valid.json()).toMatchObject({ data: [{ id: "gpt-6-luna" }] })
+			expect(upstreamFetch).not.toHaveBeenCalled()
+
+			store.revokeApiKey(keyMetadata.id)
+			const revoked = await fetch(`${server.url}/models`, {
+				headers: { Authorization: `Bearer ${apiKey}` },
+			})
+			expect(revoked.status).toBe(401)
+			const health = await fetch(`${apiBaseUrl}/health`)
+			expect(health.status).toBe(200)
+		} finally {
+			await server?.close()
+			store.close()
+			await fs.rm(root, { recursive: true, force: true })
+		}
+	})
+
 	afterEach(() => {
 		vi.restoreAllMocks()
 		vi.unstubAllEnvs()

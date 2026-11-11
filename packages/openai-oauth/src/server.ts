@@ -139,6 +139,7 @@ export const startOpenAIOAuthServer = async (
 		? await startOpenAIOAuthControlServer({
 				...settings.authControl,
 				authFilePath: settings.authFilePath,
+				store: settings.store,
 				clientId: settings.clientId,
 				tokenUrl: settings.tokenUrl,
 				fetch: settings.fetch,
@@ -160,6 +161,30 @@ export const startOpenAIOAuthServer = async (
 		const handler = runtime.handler
 		const server = createServer(async (req, res) => {
 			try {
+				const requestPath = new URL(req.url ?? "/", "http://localhost").pathname
+				if (settings.store && requestPath.startsWith("/v1/")) {
+					const authorization = req.headers.authorization ?? ""
+					const apiKey = authorization.toLowerCase().startsWith("bearer ")
+						? authorization.slice(7).trim()
+						: ""
+					if (!apiKey || !settings.store.verifyApiKey(apiKey)) {
+						res.setHeader("WWW-Authenticate", 'Bearer realm="openai-oauth"')
+						await writeWebResponse(
+							res,
+							toJsonResponse(
+								{
+									error: {
+										message: "Invalid API key.",
+										type: "authentication_error",
+										code: "invalid_api_key",
+									},
+								},
+								401,
+							),
+						)
+						return
+					}
+				}
 				const request = await toWebRequest(req, { host, port })
 				const response = await handler(request)
 				await writeWebResponse(res, response)

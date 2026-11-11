@@ -16,6 +16,23 @@ if [[ -z ${LOGIN_UI_PUBLIC_ORIGIN:-} ]]; then
 	exit 1
 fi
 
+if [[ -z ${OPENAI_OAUTH_DATABASE_PATH:-} || -z ${OPENAI_OAUTH_DATABASE_KEY:-} ]]; then
+	printf '%s\n' 'OPENAI_OAUTH_DATABASE_PATH and OPENAI_OAUTH_DATABASE_KEY are required when the login UI is enabled.' >&2
+	exit 1
+fi
+if [[ ! $OPENAI_OAUTH_DATABASE_PATH == /* ]]; then
+	printf '%s\n' 'OPENAI_OAUTH_DATABASE_PATH must be an absolute path.' >&2
+	exit 1
+fi
+if [[ ! $OPENAI_OAUTH_DATABASE_KEY =~ ^[A-Fa-f0-9]{64}$ ]]; then
+	printf '%s\n' 'OPENAI_OAUTH_DATABASE_KEY must contain exactly 64 hexadecimal characters.' >&2
+	exit 1
+fi
+session_secret=${AUTH_SESSION_SECRET:-}
+if [[ ${#session_secret} -lt 32 ]]; then
+	printf '%s\n' 'AUTH_SESSION_SECRET must be at least 32 bytes when the login UI is enabled.' >&2
+	exit 1
+fi
 control_host=${OPENAI_OAUTH_CONTROL_HOST:-127.0.0.1}
 case "$control_host" in
 	127.0.0.1) control_url_host=127.0.0.1 ;;

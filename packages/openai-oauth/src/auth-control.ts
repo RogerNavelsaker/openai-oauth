@@ -8,9 +8,11 @@ import {
 } from "@openai-oauth/core"
 import {
 	clearAuthTokens,
+	forceRefreshAuthTokens,
 	loadAuthTokens,
 	saveAuthTokens,
 } from "@openai-oauth/local/auth-file"
+import type { PersistentStore } from "@openai-oauth/local/persistence"
 import { runOpenAIOAuthDeviceCodeLogin } from "./login.js"
 
 export type AuthControlServerOptions = {
@@ -18,6 +20,7 @@ export type AuthControlServerOptions = {
 	port?: number
 	token: string
 	authFilePath?: string
+	store?: PersistentStore
 	clientId?: string
 	tokenUrl?: string
 	timeoutMs?: number
@@ -52,6 +55,7 @@ const TOKEN_EXPIRY_WARNING_MS = 5 * 60 * 1000
 const CONTROL_TOKEN_MIN_LENGTH = 32
 const DEFAULT_CONTROL_HOST = "127.0.0.1"
 const DEFAULT_CONTROL_PORT = 10532
+const MAX_CONTROL_BODY_BYTES = 64 * 1024
 
 const responseHeaders = {
 	"Cache-Control": "no-store, private",
@@ -113,6 +117,7 @@ export const startOpenAIOAuthControlServer = async (
 		try {
 			const auth = await loadAuthTokens({
 				authFilePath: options.authFilePath,
+				store: options.store,
 				clientId: options.clientId,
 				tokenUrl: options.tokenUrl,
 				fetch: fetchFn,
@@ -162,7 +167,16 @@ export const startOpenAIOAuthControlServer = async (
 		req: import("node:http").IncomingMessage,
 	): Promise<Record<string, unknown>> => {
 		const chunks: Buffer[] = []
-		for await (const chunk of req) chunks.push(Buffer.from(chunk))
+		let bodyBytes = 0
+		for await (const chunk of req) {
+			const bytes = Buffer.from(chunk)
+			bodyBytes += bytes.length
+			if (bodyBytes > MAX_CONTROL_BODY_BYTES) {
+				req.resume()
+				throw new Error("Request body too large")
+			}
+			chunks.push(bytes)
+		}
 		const parsed: unknown = JSON.parse(Buffer.concat(chunks).toString("utf8"))
 		if (!parsed || typeof parsed !== "object" || Array.isArray(parsed))
 			throw new Error("Invalid request")
@@ -248,7 +262,11 @@ export const startOpenAIOAuthControlServer = async (
 					tokenUrl: options.tokenUrl,
 					fetch: fetchFn,
 				})
-				await saveAuthTokens({ token, authFilePath: options.authFilePath })
+				await saveAuthTokens({
+					token,
+					authFilePath: options.authFilePath,
+					store: options.store,
+				})
 				job.state = "complete"
 				job.stateToken = undefined
 				job.codeVerifier = undefined
@@ -271,6 +289,74 @@ export const startOpenAIOAuthControlServer = async (
 			return
 		}
 
+		if (url.pathname === "/api-keys" && req.method === "GET") {
+			if (!options.store) {
+				sendJson(res, 503, { error: "Encrypted persistence is unavailable." })
+				return
+			}
+			sendJson(res, 200, { keys: options.store.listApiKeys() })
+			return
+		}
+
+		if (url.pathname === "/api-keys" && req.method === "POST") {
+			if (!options.store) {
+				req.resume()
+				sendJson(res, 503, { error: "Encrypted persistence is unavailable." })
+				return
+			}
+			let body: Record<string, unknown>
+			try {
+				body = await readJson(req)
+			} catch {
+				sendJson(res, 400, { error: "Invalid request body." })
+				return
+			}
+			const label = typeof body.label === "string" ? body.label.trim() : ""
+			if (
+				label.length === 0 ||
+				label.length > 64 ||
+				label.split("").some((character) => {
+					const code = character.charCodeAt(0)
+					return code < 32 || code === 127
+				})
+			) {
+				sendJson(res, 400, {
+					error: "Label must contain 1–64 printable characters.",
+				})
+				return
+			}
+			const apiKey = `sk-oai-oauth-${randomBytes(32).toString("base64url")}`
+			const metadata = options.store.createApiKey({
+				id: randomBytes(16).toString("hex"),
+				label,
+				prefix: apiKey.slice(0, 16),
+				token: apiKey,
+			})
+			sendJson(res, 201, { ...metadata, apiKey })
+			return
+		}
+
+		const apiKeyId = url.pathname.startsWith("/api-keys/")
+			? url.pathname.slice("/api-keys/".length)
+			: undefined
+		if (
+			req.method === "DELETE" &&
+			apiKeyId &&
+			/^[a-f0-9]{32}$/.test(apiKeyId)
+		) {
+			req.resume()
+			if (!options.store) {
+				sendJson(res, 503, { error: "Encrypted persistence is unavailable." })
+				return
+			}
+			if (!options.store.revokeApiKey(apiKeyId)) {
+				sendJson(res, 404, { error: "API key not found." })
+				return
+			}
+			sendJson(res, 200, { id: apiKeyId, revoked: true })
+			return
+		}
+
 		if (req.method === "POST" && url.pathname === "/refresh") {
 			req.resume()
 			if (
@@ -282,13 +368,19 @@ export const startOpenAIOAuthControlServer = async (
 				return
 			}
 			try {
-				const auth = await loadAuthTokens({
+				const refreshOptions = {
 					authFilePath: options.authFilePath,
 					clientId: options.clientId,
 					tokenUrl: options.tokenUrl,
 					fetch: fetchFn,
 					ensureFresh: true,
-				})
+				}
+				const auth = options.store
+					? await forceRefreshAuthTokens({
+							...refreshOptions,
+							store: options.store,
+						})
+					: await loadAuthTokens(refreshOptions)
 				sendJson(res, 200, { credentialsUpdatedAt: auth.lastRefresh })
 			} catch {
 				sendJson(res, 409, { error: "Refresh failed. Sign in again." })
@@ -306,7 +398,10 @@ export const startOpenAIOAuthControlServer = async (
 				sendJson(res, 409, { error: "Cancel the active sign-in first." })
 				return
 			}
-			await clearAuthTokens({ authFilePath: options.authFilePath })
+			await clearAuthTokens({
+				authFilePath: options.authFilePath,
+				store: options.store,
+			})
 			sendJson(res, 200, { credentialsConfigured: false })
 			return
 		}
@@ -332,6 +427,7 @@ export const startOpenAIOAuthControlServer = async (
 			currentLogin = job
 			void runOpenAIOAuthDeviceCodeLogin({
 				authFilePath: options.authFilePath,
+				store: options.store,
 				clientId: options.clientId,
 				tokenUrl: options.tokenUrl,
 				timeoutMs: options.timeoutMs,

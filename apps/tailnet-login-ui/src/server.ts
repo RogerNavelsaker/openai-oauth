@@ -8,11 +8,27 @@ import type {
 import { createServer } from "node:http"
 import { createRequire } from "node:module"
 import type { AddressInfo } from "node:net"
-import { dirname, join, resolve } from "node:path"
-import { fileURLToPath } from "node:url"
+import { dirname, isAbsolute, join, resolve } from "node:path"
+import { fileURLToPath, pathToFileURL } from "node:url"
 import {
+	openPersistentStore,
+	type PersistentStore,
+} from "@openai-oauth/local/persistence"
+import { fromNodeHeaders } from "better-auth/node"
+import {
+	changeBootstrapCredentials,
+	createAdminAuth,
+	getAdminSession,
+	initializeAdminBootstrap,
+	readBootstrapState,
+} from "./admin-auth.js"
+import {
+	type ApiKeyMetadata,
 	type ControlStatus,
 	type LoginState,
+	renderAdminLoginPage,
+	renderApiKeys,
+	renderBootstrapPage,
 	renderPage,
 	renderStatus,
 } from "./views.js"
@@ -23,6 +39,8 @@ export type LoginUiOptions = {
 	controlUrl: string
 	controlToken: string
 	publicOrigin: string
+	adminAuth?: ReturnType<typeof createAdminAuth>
+	store?: PersistentStore
 	fetch?: typeof fetch
 }
 
@@ -32,6 +50,8 @@ type NormalizedOptions = {
 	controlUrl: string
 	controlToken: string
 	publicOrigin: string
+	adminAuth?: ReturnType<typeof createAdminAuth>
+	store?: PersistentStore
 	fetch: typeof fetch
 }
 
@@ -78,6 +98,11 @@ const normalizeOptions = (options: LoginUiOptions): NormalizedOptions => {
 	if (Buffer.byteLength(options.controlToken, "utf8") < 32) {
 		throw new Error("SIDECAR_CONTROL_TOKEN must be at least 32 bytes.")
 	}
+	if (Boolean(options.adminAuth) !== Boolean(options.store)) {
+		throw new Error(
+			"Admin authentication and its encrypted store must be configured together.",
+		)
+	}
 	const control = new URL(options.controlUrl)
 	if (
 		(control.protocol !== "http:" && control.protocol !== "https:") ||
@@ -107,6 +132,8 @@ const normalizeOptions = (options: LoginUiOptions): NormalizedOptions => {
 		controlUrl: control.origin,
 		controlToken: options.controlToken,
 		publicOrigin: origin.origin,
+		...(options.adminAuth ? { adminAuth: options.adminAuth } : {}),
+		...(options.store ? { store: options.store } : {}),
 		fetch: options.fetch ?? globalThis.fetch.bind(globalThis),
 	}
 }
@@ -255,6 +282,34 @@ const fetchStatus = async (
 	return status
 }
 
+const isApiKeyMetadata = (value: unknown): value is ApiKeyMetadata =>
+	isRecord(value) &&
+	typeof value.id === "string" &&
+	/^[a-f0-9]{32}$/.test(value.id) &&
+	typeof value.label === "string" &&
+	typeof value.prefix === "string" &&
+	typeof value.createdAt === "string" &&
+	Number.isFinite(Date.parse(value.createdAt)) &&
+	(value.revokedAt === undefined ||
+		(typeof value.revokedAt === "string" &&
+			Number.isFinite(Date.parse(value.revokedAt))))
+
+const fetchApiKeys = async (
+	options: NormalizedOptions,
+): Promise<ApiKeyMetadata[]> => {
+	const response = await options.fetch(`${options.controlUrl}/api-keys`, {
+		headers: { Authorization: `Bearer ${options.controlToken}` },
+	})
+	if (!response.ok) throw new Error("control service unavailable")
+	const value: unknown = await response.json()
+	if (!isRecord(value) || !Array.isArray(value.keys))
+		throw new Error("invalid API-key response")
+	const keys = value.keys.filter(isApiKeyMetadata)
+	if (keys.length !== value.keys.length)
+		throw new Error("invalid API-key metadata")
+	return keys
+}
+
 const csrfForRequest = (
 	req: IncomingMessage,
 	res: ServerResponse,
@@ -284,6 +339,79 @@ const isValidPost = async (
 	if (!form || !cookie || !sameToken(form.get("csrf") ?? "", cookie))
 		return undefined
 	return form
+}
+
+const adminAccessForRequest = async (
+	req: IncomingMessage,
+	options: NormalizedOptions,
+) => {
+	if (!options.adminAuth || !options.store) return undefined
+	const session = await getAdminSession(
+		options.adminAuth,
+		fromNodeHeaders(req.headers),
+	)
+	if (!session) return { session: null, bootstrapComplete: false }
+	const bootstrap = await readBootstrapState(options.store)
+	return {
+		session,
+		bootstrapComplete: Boolean(
+			bootstrap?.adminUserId === session.user.id &&
+				bootstrap.usernameChanged &&
+				bootstrap.passwordChanged,
+		),
+	}
+}
+
+const requireCompletedAdmin = async (
+	req: IncomingMessage,
+	res: ServerResponse,
+	options: NormalizedOptions,
+): Promise<boolean> => {
+	if (!options.adminAuth || !options.store) {
+		send(
+			res,
+			503,
+			"Admin authentication unavailable",
+			"text/plain; charset=utf-8",
+		)
+		return false
+	}
+	try {
+		const access = await adminAccessForRequest(req, options)
+		if (access?.session && access.bootstrapComplete) return true
+		send(
+			res,
+			401,
+			"Administrator sign-in required",
+			"text/plain; charset=utf-8",
+		)
+		return false
+	} catch {
+		send(
+			res,
+			503,
+			"Admin authentication unavailable",
+			"text/plain; charset=utf-8",
+		)
+		return false
+	}
+}
+
+const setAuthCookies = (res: ServerResponse, response: Response): void => {
+	const cookies = response.headers.getSetCookie()
+	if (cookies.length === 0) return
+	const existing = res.getHeader("Set-Cookie")
+	const currentCookies = Array.isArray(existing)
+		? existing.map(String)
+		: typeof existing === "string"
+			? [existing]
+			: []
+	res.setHeader("Set-Cookie", [...currentCookies, ...cookies])
+}
+
+const redirectToRoot = (res: ServerResponse): void => {
+	res.writeHead(303, { ...securityHeaders, Location: "/" })
+	res.end()
 }
 
 const serveAsset = async (
@@ -327,8 +455,156 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 			await serveAsset(res, copyScriptPath, "text/javascript; charset=utf-8")
 			return
 		}
+		if (
+			req.method === "POST" &&
+			["/_admin/login", "/_admin/sign-out", "/_admin/bootstrap"].includes(
+				url.pathname,
+			)
+		) {
+			if (!options.adminAuth || !options.store) {
+				req.resume()
+				send(res, 404, "Not found", "text/plain; charset=utf-8")
+				return
+			}
+			const form = await isValidPost(req, options)
+			if (!form) {
+				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
+				return
+			}
+			if (url.pathname === "/_admin/login") {
+				const username = form.get("username") ?? ""
+				const password = form.get("password") ?? ""
+				if (
+					username.length > 64 ||
+					password.length > 128 ||
+					!username ||
+					!password
+				) {
+					send(
+						res,
+						400,
+						renderAdminLoginPage(
+							form.get("csrf") ?? "",
+							"Enter your username and password.",
+						),
+					)
+					return
+				}
+				try {
+					const response = await options.adminAuth.api.signInUsername({
+						body: { username, password },
+						headers: fromNodeHeaders(req.headers),
+						asResponse: true,
+					})
+					if (!response.ok) {
+						send(
+							res,
+							401,
+							renderAdminLoginPage(
+								form.get("csrf") ?? "",
+								"Invalid username or password.",
+							),
+						)
+						return
+					}
+					setAuthCookies(res, response)
+					redirectToRoot(res)
+				} catch {
+					send(
+						res,
+						401,
+						renderAdminLoginPage(
+							form.get("csrf") ?? "",
+							"Invalid username or password.",
+						),
+					)
+				}
+				return
+			}
+			if (url.pathname === "/_admin/sign-out") {
+				try {
+					const response = await options.adminAuth.api.signOut({
+						headers: fromNodeHeaders(req.headers),
+						asResponse: true,
+					})
+					setAuthCookies(res, response)
+					redirectToRoot(res)
+				} catch {
+					send(
+						res,
+						503,
+						"Authentication service unavailable",
+						"text/plain; charset=utf-8",
+					)
+				}
+				return
+			}
+
+			const access = await adminAccessForRequest(req, options)
+			if (!access?.session) {
+				redirectToRoot(res)
+				return
+			}
+			if (access.bootstrapComplete) {
+				redirectToRoot(res)
+				return
+			}
+			try {
+				await changeBootstrapCredentials(
+					options.adminAuth,
+					options.store,
+					fromNodeHeaders(req.headers),
+					{
+						username: form.get("username") ?? "",
+						currentPassword: form.get("currentPassword") ?? "",
+						newPassword: form.get("newPassword") ?? "",
+					},
+				)
+				redirectToRoot(res)
+			} catch {
+				send(
+					res,
+					400,
+					renderBootstrapPage(
+						form.get("csrf") ?? "",
+						"Could not change both credentials. Verify the current password and choose new values.",
+					),
+				)
+			}
+			return
+		}
 		if (req.method === "GET" && url.pathname === "/") {
 			const csrf = csrfForRequest(req, res, options)
+			if (options.adminAuth && options.store) {
+				try {
+					const access = await adminAccessForRequest(req, options)
+					if (!access?.session) {
+						send(res, 200, renderAdminLoginPage(csrf))
+					} else if (!access.bootstrapComplete) {
+						send(res, 200, renderBootstrapPage(csrf))
+					} else {
+						const username =
+							access.session.user.username ?? access.session.user.name
+						try {
+							send(
+								res,
+								200,
+								renderPage(csrf, await fetchStatus(options), false, username),
+							)
+						} catch {
+							send(res, 200, renderPage(csrf, undefined, true, username))
+						}
+					}
+				} catch {
+					send(
+						res,
+						503,
+						"Admin authentication unavailable",
+						"text/plain; charset=utf-8",
+					)
+				}
+				return
+			}
 			try {
 				send(res, 200, renderPage(csrf, await fetchStatus(options)))
 			} catch {
@@ -338,6 +614,28 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 		}
 		if (req.method === "GET" && url.pathname === "/_status") {
 			const csrf = csrfForRequest(req, res, options)
+			if (options.adminAuth) {
+				try {
+					const access = await adminAccessForRequest(req, options)
+					if (!access?.session || !access.bootstrapComplete) {
+						send(
+							res,
+							401,
+							"Administrator sign-in required",
+							"text/plain; charset=utf-8",
+						)
+						return
+					}
+				} catch {
+					send(
+						res,
+						503,
+						"Admin authentication unavailable",
+						"text/plain; charset=utf-8",
+					)
+					return
+				}
+			}
 			try {
 				send(res, 200, renderStatus(csrf, await fetchStatus(options)))
 			} catch {
@@ -345,6 +643,111 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 			}
 			return
 		}
+		if (req.method === "GET" && url.pathname === "/_api-keys") {
+			if (!(await requireCompletedAdmin(req, res, options))) return
+			const csrf = csrfForRequest(req, res, options)
+			try {
+				send(res, 200, renderApiKeys(csrf, await fetchApiKeys(options)))
+			} catch {
+				send(
+					res,
+					502,
+					renderApiKeys(csrf, [], undefined, "API-key service is unavailable."),
+				)
+			}
+			return
+		}
+
+		const revokeSuffix = "/revoke"
+		const apiKeyRevokeId =
+			url.pathname.startsWith("/_api-keys/") &&
+			url.pathname.endsWith(revokeSuffix)
+				? url.pathname.slice("/_api-keys/".length, -revokeSuffix.length)
+				: undefined
+		const validApiKeyRevokeId =
+			apiKeyRevokeId && /^[a-f0-9]{32}$/.test(apiKeyRevokeId)
+				? apiKeyRevokeId
+				: undefined
+		if (
+			req.method === "POST" &&
+			(url.pathname === "/_api-keys" || validApiKeyRevokeId !== undefined)
+		) {
+			const form = await isValidPost(req, options)
+			if (!form) {
+				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
+				return
+			}
+			if (!(await requireCompletedAdmin(req, res, options))) return
+			const csrf = csrfForRequest(req, res, options)
+			try {
+				if (url.pathname === "/_api-keys") {
+					const label = form.get("label")?.trim() ?? ""
+					if (
+						label.length === 0 ||
+						label.length > 64 ||
+						label.split("").some((character) => {
+							const code = character.charCodeAt(0)
+							return code < 32 || code === 127
+						})
+					) {
+						send(
+							res,
+							400,
+							"API-key labels must contain 1–64 printable characters.",
+							"text/plain; charset=utf-8",
+						)
+						return
+					}
+					const response = await options.fetch(
+						`${options.controlUrl}/api-keys`,
+						{
+							method: "POST",
+							headers: {
+								Authorization: `Bearer ${options.controlToken}`,
+								"Content-Type": "application/json",
+							},
+							body: JSON.stringify({ label }),
+						},
+					)
+					if (response.status !== 201) throw new Error("API-key create failed")
+					const created: unknown = await response.json()
+					if (!isRecord(created) || typeof created.apiKey !== "string")
+						throw new Error("Invalid API-key response")
+					let keys: ApiKeyMetadata[] = []
+					let notice: string | undefined
+					try {
+						keys = await fetchApiKeys(options)
+					} catch {
+						notice =
+							"The key was created, but the key list is temporarily unavailable."
+					}
+					send(res, 200, renderApiKeys(csrf, keys, created.apiKey, notice))
+					return
+				}
+
+				const response = await options.fetch(
+					`${options.controlUrl}/api-keys/${validApiKeyRevokeId}`,
+					{
+						method: "DELETE",
+						headers: { Authorization: `Bearer ${options.controlToken}` },
+					},
+				)
+				if (!response.ok) throw new Error("API-key revoke failed")
+				let keys: ApiKeyMetadata[] = []
+				let notice: string | undefined
+				try {
+					keys = await fetchApiKeys(options)
+				} catch {
+					notice =
+						"The key was revoked, but the key list is temporarily unavailable."
+				}
+				send(res, 200, renderApiKeys(csrf, keys, undefined, notice))
+			} catch {
+				send(res, 502, "API-key operation failed.", "text/plain; charset=utf-8")
+			}
+			return
+		}
+
 		if (
 			req.method === "POST" &&
 			["/_browser-start", "/_browser-callback"].includes(url.pathname)
@@ -353,6 +756,28 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 			if (!form) {
 				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
 				return
+			}
+			if (options.adminAuth) {
+				try {
+					const access = await adminAccessForRequest(req, options)
+					if (!access?.session || !access.bootstrapComplete) {
+						send(
+							res,
+							401,
+							"Administrator sign-in required",
+							"text/plain; charset=utf-8",
+						)
+						return
+					}
+				} catch {
+					send(
+						res,
+						503,
+						"Admin authentication unavailable",
+						"text/plain; charset=utf-8",
+					)
+					return
+				}
 			}
 			try {
 				let response: Response
@@ -401,6 +826,28 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 				send(res, 403, "Forbidden", "text/plain; charset=utf-8")
 				return
 			}
+			if (options.adminAuth) {
+				try {
+					const access = await adminAccessForRequest(req, options)
+					if (!access?.session || !access.bootstrapComplete) {
+						send(
+							res,
+							401,
+							"Administrator sign-in required",
+							"text/plain; charset=utf-8",
+						)
+						return
+					}
+				} catch {
+					send(
+						res,
+						503,
+						"Admin authentication unavailable",
+						"text/plain; charset=utf-8",
+					)
+					return
+				}
+			}
 			let notice: string | undefined
 			try {
 				if (url.pathname === "/_start") {
@@ -436,7 +883,7 @@ export const createLoginUiHandler = (input: LoginUiOptions) => {
 					)
 					notice = response.ok
 						? isRefresh
-							? "Refresh complete; the access token was renewed if needed."
+							? "Provider refresh completed and the updated credentials were saved."
 							: "Signed out. Saved local OAuth credentials were removed; the provider token was not revoked."
 						: isRefresh
 							? "Refresh failed. Sign out and sign in again, or check the sidecar logs."
@@ -494,7 +941,7 @@ export const startLoginUiServer = async (input: LoginUiOptions) => {
 	}
 }
 
-const optionsFromEnv = (): LoginUiOptions => {
+const optionsFromEnv = async (): Promise<LoginUiOptions> => {
 	const controlToken = process.env.SIDECAR_CONTROL_TOKEN
 	const publicOrigin = process.env.LOGIN_UI_PUBLIC_ORIGIN
 	if (!controlToken || !publicOrigin) {
@@ -507,12 +954,49 @@ const optionsFromEnv = (): LoginUiOptions => {
 	if (!Number.isInteger(port) || port < 0 || port > 65535) {
 		throw new Error("LOGIN_UI_PORT must be an integer from 0 to 65535.")
 	}
-	return {
-		host: process.env.LOGIN_UI_HOST ?? DEFAULT_HOST,
-		port,
-		controlUrl: process.env.SIDECAR_CONTROL_URL ?? "http://127.0.0.1:10532",
-		controlToken,
-		publicOrigin,
+	const databasePath = process.env.OPENAI_OAUTH_DATABASE_PATH
+	const encryptionKey = process.env.OPENAI_OAUTH_DATABASE_KEY
+	if (!databasePath || !encryptionKey) {
+		throw new Error(
+			"OPENAI_OAUTH_DATABASE_PATH and OPENAI_OAUTH_DATABASE_KEY are required for the login UI.",
+		)
+	}
+	if (!isAbsolute(databasePath)) {
+		throw new Error("OPENAI_OAUTH_DATABASE_PATH must be an absolute path.")
+	}
+	const sessionSecret = process.env.AUTH_SESSION_SECRET
+	if (!sessionSecret)
+		throw new Error("AUTH_SESSION_SECRET is required for the login UI.")
+
+	const store = await openPersistentStore({
+		databaseUrl: pathToFileURL(resolve(databasePath)).href,
+		encryptionKey,
+	})
+	try {
+		await store.withOAuthRefreshLock(async (assertLock) => {
+			assertLock()
+			await store.importAuthFile()
+		})
+		const adminAuth = createAdminAuth(store, {
+			baseURL: new URL(publicOrigin).origin,
+			secret: sessionSecret,
+		})
+		await initializeAdminBootstrap(adminAuth, store, {
+			username: process.env.AUTH_BOOTSTRAP_USERNAME,
+			password: process.env.AUTH_BOOTSTRAP_PASSWORD,
+		})
+		return {
+			host: process.env.LOGIN_UI_HOST ?? DEFAULT_HOST,
+			port,
+			controlUrl: process.env.SIDECAR_CONTROL_URL ?? "http://127.0.0.1:10532",
+			controlToken,
+			publicOrigin,
+			adminAuth,
+			store,
+		}
+	} catch (error) {
+		store.close()
+		throw error
 	}
 }
 
@@ -520,6 +1004,22 @@ if (
 	process.argv[1] &&
 	resolve(process.argv[1]) === fileURLToPath(import.meta.url)
 ) {
-	const server = await startLoginUiServer(optionsFromEnv())
+	const options = await optionsFromEnv()
+	let server: Awaited<ReturnType<typeof startLoginUiServer>>
+	try {
+		server = await startLoginUiServer(options)
+	} catch (error) {
+		options.store?.close()
+		throw error
+	}
 	console.log(`Tailnet OAuth login UI listening at ${server.url}`)
+	let stopping = false
+	const shutdown = async () => {
+		if (stopping) return
+		stopping = true
+		await server.close().catch(() => undefined)
+		options.store?.close()
+	}
+	process.once("SIGTERM", () => void shutdown())
+	process.once("SIGINT", () => void shutdown())
 }

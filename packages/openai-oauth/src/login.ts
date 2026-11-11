@@ -12,6 +12,7 @@ import {
 	type SavedAuthTokens,
 	saveAuthTokens,
 } from "@openai-oauth/local/auth-file"
+import type { PersistentStore } from "@openai-oauth/local/persistence"
 import callbackSuccessHtml from "./callback-success.html?raw"
 
 const DEFAULT_LOGIN_REDIRECT_HOST = "localhost"
@@ -41,6 +42,7 @@ export type OpenAIOAuthLoginOptions = {
 	clientId?: string
 	tokenUrl?: string
 	authFilePath?: string
+	store?: PersistentStore
 	openBrowser?: boolean
 	timeoutMs?: number
 	fetch?: typeof fetch
@@ -328,6 +330,7 @@ export const runOpenAIOAuthLogin = async (
 		const saved = await saveAuthTokens({
 			token,
 			authFilePath: options.authFilePath,
+			store: options.store,
 		})
 
 		onMessage(`Credentials saved to ${saved.path}`)
@@ -519,6 +522,7 @@ export const runOpenAIOAuthDeviceCodeLogin = async (
 		const saved = await saveAuthTokens({
 			token,
 			authFilePath: options.authFilePath,
+			store: options.store,
 		})
 		onMessage(`Credentials saved to ${saved.path}`)
 		return saved

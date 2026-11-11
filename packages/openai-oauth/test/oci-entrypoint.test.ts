@@ -64,8 +64,28 @@ describe("OCI login UI entrypoint", () => {
 		expect(result.stdout).not.toContain("should-not-start")
 	})
 
+	test("requires encrypted-database and session secrets when the UI is enabled", () => {
+		const cli = makeExecutable("#!/bin/sh\\necho should-not-start\\n")
+		const result = spawnSync("bash", [entrypoint, "--help"], {
+			encoding: "utf8",
+			env: {
+				...process.env,
+				OPENAI_OAUTH_CLI_BIN: cli,
+				OPENAI_OAUTH_LOGIN_UI: "1",
+				OPENAI_OAUTH_CONTROL_TOKEN: "0123456789abcdef0123456789abcdef",
+				LOGIN_UI_PUBLIC_ORIGIN: "http://127.0.0.1:10533",
+				OPENAI_OAUTH_DATABASE_PATH: "",
+				OPENAI_OAUTH_DATABASE_KEY: "",
+				AUTH_SESSION_SECRET: "",
+			},
+		})
+		expect(result.status).toBe(1)
+		expect(result.stderr).toContain("OPENAI_OAUTH_DATABASE_PATH")
+		expect(result.stdout).not.toContain("should-not-start")
+	})
+
 	test("starts the bundled UI with the sidecar's loopback control endpoint", () => {
-		const cli = makeExecutable("#!/bin/sh\necho cli-started\n")
+		const cli = makeExecutable("#!/bin/sh\necho cli-started\nsleep 0.1\n")
 		const bun = makeExecutable(
 			'#!/bin/sh\nprintf "%s\\n" "$SIDECAR_CONTROL_TOKEN" "$SIDECAR_CONTROL_URL"\n',
 		)
@@ -80,6 +100,9 @@ describe("OCI login UI entrypoint", () => {
 				OPENAI_OAUTH_CONTROL_TOKEN: token,
 				OPENAI_OAUTH_CONTROL_PORT: "11532",
 				LOGIN_UI_PUBLIC_ORIGIN: "http://127.0.0.1:11533",
+				OPENAI_OAUTH_DATABASE_PATH: "/tmp/openai-oauth-test.db",
+				OPENAI_OAUTH_DATABASE_KEY: "a".repeat(64),
+				AUTH_SESSION_SECRET: "test-only-session-secret-with-at-least-32-bytes",
 				BUN_BIN: bun,
 			},
 		})
@@ -101,6 +124,9 @@ describe("OCI login UI entrypoint", () => {
 				OPENAI_OAUTH_CONTROL_TOKEN: "0123456789abcdef0123456789abcdef",
 				OPENAI_OAUTH_CONTROL_HOST: "0.0.0.0",
 				LOGIN_UI_PUBLIC_ORIGIN: "http://127.0.0.1:11533",
+				OPENAI_OAUTH_DATABASE_PATH: "/tmp/openai-oauth-test.db",
+				OPENAI_OAUTH_DATABASE_KEY: "a".repeat(64),
+				AUTH_SESSION_SECRET: "test-only-session-secret-with-at-least-32-bytes",
 			},
 		})
 

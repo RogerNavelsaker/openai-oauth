@@ -1,4 +1,13 @@
+import { promises as fs } from "node:fs"
+import os from "node:os"
+import path from "node:path"
+import { pathToFileURL } from "node:url"
+import {
+	openPersistentStore,
+	type PersistentStore,
+} from "@openai-oauth/local/persistence"
 import { afterEach, describe, expect, test, vi } from "vitest"
+import { createAdminAuth, initializeAdminBootstrap } from "./admin-auth.js"
 import { startLoginUiServer } from "./server.js"
 import { renderStatus } from "./views.js"
 
@@ -21,8 +30,37 @@ const options = (fetch: typeof globalThis.fetch) => ({
 	fetch,
 })
 
+const ADMIN_AUTH_SECRET =
+	"test-only-admin-session-secret-with-at-least-32-bytes"
+const ADMIN_BOOTSTRAP_PASSWORD = "temporary-bootstrap-password-123"
+const adminStores: Array<{ store: PersistentStore; directory: string }> = []
+
+const adminOptions = async (fetch: typeof globalThis.fetch) => {
+	const directory = await fs.mkdtemp(path.join(os.tmpdir(), "oauth-admin-ui-"))
+	const store = await openPersistentStore({
+		databaseUrl: pathToFileURL(path.join(directory, "auth.db")).href,
+		encryptionKey:
+			"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+	})
+	adminStores.push({ store, directory })
+	const auth = createAdminAuth(store, {
+		baseURL: "https://login.example.ts.net",
+		secret: ADMIN_AUTH_SECRET,
+	})
+	await initializeAdminBootstrap(auth, store, {
+		username: "bootstrap_admin",
+		password: ADMIN_BOOTSTRAP_PASSWORD,
+	})
+	return { ...options(fetch), adminAuth: auth, store }
+}
 afterEach(async () => {
 	await Promise.all(servers.splice(0).map((server) => server.close()))
+	await Promise.all(
+		adminStores.splice(0).map(async ({ store, directory }) => {
+			store.close()
+			await fs.rm(directory, { recursive: true, force: true })
+		}),
+	)
 	vi.restoreAllMocks()
 })
 
@@ -79,7 +117,7 @@ describe("tailnet OAuth login UI", () => {
 		)
 		expect(html).toContain("Device-code")
 		expect(html).toContain("/assets/copy.js")
-		expect(html).toContain("Your credentials are never shown here")
+		expect(html).toContain("OAuth credentials stay server-side")
 		expect(html).not.toContain(CONTROL_TOKEN)
 		expect(
 			sidecarFetch.mock.calls.some(([, init]) => init?.method === "POST"),
@@ -129,7 +167,7 @@ describe("tailnet OAuth login UI", () => {
 		servers.push(server)
 
 		for (const [route, endpoint, expectedNotice] of [
-			["/_refresh", "/refresh", "Refresh complete"],
+			["/_refresh", "/refresh", "Provider refresh completed"],
 			["/_sign-out", "/sign-out", "Signed out"],
 		] as const) {
 			const page = await globalThis.fetch(server.url)
@@ -305,5 +343,211 @@ describe("tailnet OAuth login UI", () => {
 		})
 		expect(fragment).toContain("&lt;img src=x onerror=alert(1)&gt;")
 		expect(fragment).not.toContain("<img src=x")
+	})
+	test("gates the control plane until admin login and both bootstrap credentials change", async () => {
+		const apiKeyId = "b".repeat(32)
+		const oneTimeApiKey = `sk-oai-oauth-${"z".repeat(43)}`
+		let apiKeys: Array<{
+			id: string
+			label: string
+			prefix: string
+			createdAt: string
+			revokedAt?: string
+		}> = []
+		const sidecarFetch = vi.fn<typeof fetch>(async (input, init) => {
+			const url = String(input)
+			const method = init?.method ?? "GET"
+			if (url.endsWith("/status")) return statusResponse("idle")
+			if (url.endsWith("/api-keys") && method === "GET")
+				return Response.json({ keys: apiKeys })
+			if (url.endsWith("/api-keys") && method === "POST") {
+				const body = JSON.parse(String(init?.body)) as { label: string }
+				apiKeys = [
+					{
+						id: apiKeyId,
+						label: body.label,
+						prefix: oneTimeApiKey.slice(0, 16),
+						createdAt: "2026-11-11T00:00:00.000Z",
+					},
+				]
+				return Response.json(
+					{
+						id: apiKeyId,
+						label: body.label,
+						prefix: oneTimeApiKey.slice(0, 16),
+						createdAt: "2026-11-11T00:00:00.000Z",
+						apiKey: oneTimeApiKey,
+					},
+					{ status: 201 },
+				)
+			}
+			if (url.endsWith(`/api-keys/${apiKeyId}`) && method === "DELETE") {
+				apiKeys = apiKeys.map((key) => ({
+					...key,
+					revokedAt: "2026-11-11T00:01:00.000Z",
+				}))
+				return Response.json({ id: apiKeyId, revoked: true })
+			}
+			throw new Error(`Unexpected control request: ${method} ${url}`)
+		})
+		const server = await startLoginUiServer(await adminOptions(sidecarFetch))
+		servers.push(server)
+
+		const loginPage = await globalThis.fetch(server.url)
+		const loginHtml = await loginPage.text()
+		const csrfCookie =
+			loginPage.headers.get("set-cookie")?.split(";", 1)[0] ?? ""
+		const csrf =
+			loginHtml.match(/name="csrf" value="([a-f0-9]{48})"/)?.[1] ?? ""
+		expect(loginHtml).toContain("Admin sign in")
+		expect(loginHtml).not.toContain("Device-code")
+
+		const lockedStart = await globalThis.fetch(`${server.url}/_start`, {
+			method: "POST",
+			headers: {
+				Cookie: csrfCookie,
+				Origin: "https://login.example.ts.net",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({ csrf }),
+		})
+		expect(lockedStart.status).toBe(401)
+		expect(sidecarFetch).not.toHaveBeenCalled()
+		const crossOriginLogin = await globalThis.fetch(
+			`${server.url}/_admin/login`,
+			{
+				method: "POST",
+				headers: {
+					Cookie: csrfCookie,
+					Origin: "https://attacker.example",
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+				body: new URLSearchParams({
+					csrf,
+					username: "bootstrap_admin",
+					password: ADMIN_BOOTSTRAP_PASSWORD,
+				}),
+			},
+		)
+		expect(crossOriginLogin.status).toBe(403)
+
+		const signIn = await globalThis.fetch(`${server.url}/_admin/login`, {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				Cookie: csrfCookie,
+				Origin: "https://login.example.ts.net",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({
+				csrf,
+				username: "bootstrap_admin",
+				password: ADMIN_BOOTSTRAP_PASSWORD,
+			}),
+		})
+		expect(signIn.status).toBe(303)
+		const sessionSetCookie = signIn.headers
+			.getSetCookie()
+			.find((cookie) => !cookie.startsWith("oauth_login_csrf="))
+		expect(sessionSetCookie).toBeDefined()
+		expect(sessionSetCookie).toContain("HttpOnly")
+		expect(sessionSetCookie).toContain("Secure")
+		expect(sessionSetCookie).toMatch(/SameSite=Strict/i)
+		const sessionCookie = sessionSetCookie?.split(";", 1)[0]
+		expect(sessionCookie).toBeDefined()
+		const adminCookie = `${csrfCookie}; ${sessionCookie}`
+
+		const forcedChange = await globalThis.fetch(server.url, {
+			headers: { Cookie: adminCookie },
+		})
+		const forcedHtml = await forcedChange.text()
+		expect(forcedHtml).toContain("Change bootstrap credentials")
+		expect(forcedHtml).not.toContain("Device-code")
+
+		const bootstrap = await globalThis.fetch(`${server.url}/_admin/bootstrap`, {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				Cookie: adminCookie,
+				Origin: "https://login.example.ts.net",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({
+				csrf,
+				username: "real_admin",
+				currentPassword: ADMIN_BOOTSTRAP_PASSWORD,
+				newPassword: "new-admin-password-strong-789",
+			}),
+		})
+		expect(bootstrap.status).toBe(303)
+
+		const dashboard = await globalThis.fetch(server.url, {
+			headers: { Cookie: adminCookie },
+		})
+		const dashboardHtml = await dashboard.text()
+		expect(dashboardHtml).toContain("Signed in as <strong>real_admin</strong>")
+		expect(dashboardHtml).toContain("Device-code")
+		expect(sidecarFetch).toHaveBeenCalledTimes(1)
+
+		const apiKeyPanel = await globalThis.fetch(`${server.url}/_api-keys`, {
+			headers: { Cookie: adminCookie },
+		})
+		expect(apiKeyPanel.status).toBe(200)
+		expect(await apiKeyPanel.text()).toContain("Create API key")
+		const createApiKey = await globalThis.fetch(`${server.url}/_api-keys`, {
+			method: "POST",
+			headers: {
+				Cookie: adminCookie,
+				Origin: "https://login.example.ts.net",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({ csrf, label: "Bifrost client" }),
+		})
+		expect(createApiKey.status).toBe(200)
+		const createdKeyHtml = await createApiKey.text()
+		expect(createdKeyHtml).toContain(oneTimeApiKey)
+		expect(createdKeyHtml).toContain("Copy this API key now")
+		expect(createdKeyHtml).not.toContain(CONTROL_TOKEN)
+
+		const keyList = await globalThis.fetch(`${server.url}/_api-keys`, {
+			headers: { Cookie: adminCookie },
+		})
+		const keyListHtml = await keyList.text()
+		expect(keyListHtml).toContain("Bifrost client")
+		expect(keyListHtml).not.toContain(oneTimeApiKey)
+		expect(keyListHtml).toContain("Revoke")
+
+		const revokeKey = await globalThis.fetch(
+			`${server.url}/_api-keys/${apiKeyId}/revoke`,
+			{
+				method: "POST",
+				headers: {
+					Cookie: adminCookie,
+					Origin: "https://login.example.ts.net",
+					"Content-Type": "application/x-www-form-urlencoded",
+				},
+				body: new URLSearchParams({ csrf }),
+			},
+		)
+		expect(revokeKey.status).toBe(200)
+		const revokedKeyHtml = await revokeKey.text()
+		expect(revokedKeyHtml).toContain("Revoked")
+		expect(revokedKeyHtml).not.toContain("Revoke</button>")
+
+		const logout = await globalThis.fetch(`${server.url}/_admin/sign-out`, {
+			method: "POST",
+			redirect: "manual",
+			headers: {
+				Cookie: adminCookie,
+				Origin: "https://login.example.ts.net",
+				"Content-Type": "application/x-www-form-urlencoded",
+			},
+			body: new URLSearchParams({ csrf }),
+		})
+		expect(logout.status).toBe(303)
+		const signedOutPage = await globalThis.fetch(server.url, {
+			headers: { Cookie: adminCookie },
+		})
+		expect(await signedOutPage.text()).toContain("Admin sign in")
 	})
 })

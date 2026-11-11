@@ -27,6 +27,11 @@
 			"types": "./dist/auth-file-entry.d.ts",
 			"import": "./dist/auth-file-entry.js",
 			"default": "./dist/auth-file-entry.js"
+		},
+		"./persistence": {
+			"types": "./dist/persistence-entry.d.ts",
+			"import": "./dist/persistence-entry.js",
+			"default": "./dist/persistence-entry.js"
 		}
 	},
 	"files": [
@@ -46,6 +51,8 @@
 	},
 	"dependencies": {
 		"@openai-oauth/core": "workspace:*",
+		"@tursodatabase/database": "0.8.3",
+		"drizzle-orm": "0.45.4",
 		"proper-lockfile": "4.1.2"
 	},
 	"devDependencies": {

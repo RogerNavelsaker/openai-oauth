@@ -56,6 +56,7 @@ export const openaiCredentials = (
 				now: options.now,
 				onTokenRefreshLog: options.onTokenRefreshLog,
 				tokenUrl: options.tokenUrl,
+				store: options.store,
 			}),
 		),
 })

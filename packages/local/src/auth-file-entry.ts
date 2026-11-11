@@ -7,6 +7,7 @@ export type {
 } from "./auth-file.js"
 export {
 	clearAuthTokens,
+	forceRefreshAuthTokens,
 	loadAuthTokens,
 	resolveAuthFileCandidates,
 	resolveCodexAuthFilePath,

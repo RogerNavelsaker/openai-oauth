@@ -60,6 +60,11 @@ jobs:
           trap cleanup EXIT
           podman run --detach --name "$smoke_name" --network=none \
             --env OPENAI_OAUTH_LOGIN_UI=1 \
+            --env OPENAI_OAUTH_DATABASE_PATH=/tmp/openai-oauth-smoke/auth.db \
+            --env OPENAI_OAUTH_DATABASE_KEY=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa \
+            --env AUTH_SESSION_SECRET=container-smoke-auth-session-secret-32bytes-min \
+            --env AUTH_BOOTSTRAP_USERNAME=smoke_admin \
+            --env AUTH_BOOTSTRAP_PASSWORD=container-smoke-bootstrap-password-123 \
             --env OPENAI_OAUTH_CONTROL_TOKEN="$smoke_token" \
             --env OPENAI_OAUTH_CONTROL_HOST=127.0.0.1 \
             --env OPENAI_OAUTH_CONTROL_PORT=10532 \
@@ -69,7 +74,7 @@ jobs:
             "$image:$tag" --device-auth --host 127.0.0.1 --port 10531
           ready=0
           for attempt in {1..30}; do
-            if podman exec "$smoke_name" bun -e 'Promise.all([fetch("http://127.0.0.1:10533/"), fetch("http://127.0.0.1:10533/assets/styles.css")]).then(async ([page, styles]) => { const html = await page.text(); const css = await styles.text(); if (!page.ok || !html.includes("No credentials are configured yet.") || !styles.ok || css.length === 0) process.exit(1); }).catch(() => process.exit(1))'; then
+            if podman exec "$smoke_name" bun -e 'Promise.all([fetch("http://127.0.0.1:10533/"), fetch("http://127.0.0.1:10533/assets/styles.css")]).then(async ([page, styles]) => { const html = await page.text(); const css = await styles.text(); if (!page.ok || !html.includes("Admin sign in") || !styles.ok || css.length === 0) process.exit(1); }).catch(() => process.exit(1))'; then
               ready=1
               break
             fi

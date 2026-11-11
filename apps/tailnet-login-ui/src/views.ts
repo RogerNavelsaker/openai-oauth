@@ -46,6 +46,29 @@ const formatTimestamp = (value: string): string => {
 				timeStyle: "short",
 			}).format(date)
 }
+export type ApiKeyMetadata = {
+	id: string
+	label: string
+	prefix: string
+	createdAt: string
+	revokedAt?: string
+}
+
+export const renderApiKeys = (
+	csrf: string,
+	keys: ApiKeyMetadata[],
+	revealedApiKey?: string,
+	notice?: string,
+): string => {
+	const rows = keys
+		.map(
+			(key) =>
+				`<li class="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800 py-3"><div><p class="font-semibold">${escapeHtml(key.label)}</p><p class="mt-1 text-xs text-zinc-400"><code>${escapeHtml(key.prefix)}…</code> · created ${escapeHtml(formatTimestamp(key.createdAt))}${key.revokedAt ? ` · revoked ${escapeHtml(formatTimestamp(key.revokedAt))}` : ""}</p></div>${key.revokedAt ? `<span class="text-xs text-zinc-500">Revoked</span>` : `<form hx-post="/_api-keys/${escapeHtml(key.id)}/revoke" hx-target="#api-keys" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg bg-red-500 px-3 py-2 text-sm font-bold text-white" type="submit">Revoke</button></form>`}</li>`,
+		)
+		.join("")
+	return `<section id="api-keys" class="mt-6 rounded-xl border border-zinc-800 bg-zinc-900 p-6"><h2 class="text-lg font-semibold">API keys</h2><p class="mt-2 text-sm text-zinc-400">Create bearer keys for OpenAI-compatible clients. The secret is shown once; only its verifier is stored.</p>${notice ? `<p class="mt-3 text-sm text-red-300" role="alert">${escapeHtml(notice)}</p>` : ""}${revealedApiKey ? `<div class="mt-4 rounded-lg border border-amber-700 bg-amber-950 p-4"><p class="text-sm font-semibold text-amber-200">Copy this API key now. It cannot be retrieved later.</p><code class="mt-2 block break-all text-sm text-amber-100">${escapeHtml(revealedApiKey)}</code></div>` : ""}<form class="mt-4 flex flex-wrap gap-3" hx-post="/_api-keys" hx-target="#api-keys" hx-swap="outerHTML"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label class="sr-only" for="api-key-label">Key label</label><input class="min-w-0 flex-1 rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="api-key-label" name="label" placeholder="Key label" required maxlength="64" autocomplete="off"><button class="rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950" type="submit">Create API key</button></form><ul class="mt-4">${rows || `<li class="border-t border-zinc-800 py-3 text-sm text-zinc-400">No API keys have been created.</li>`}</ul></section>`
+}
+
 const isActive = (state: LoginState): boolean =>
 	state === "starting" ||
 	state === "awaiting_user" ||
@@ -141,10 +164,41 @@ export const renderStatus = (
 	return `<section id="login-status" class="rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl"${poll ? ' hx-get="/_status" hx-trigger="every 2s" hx-swap="outerHTML"' : ""}><div class="flex items-center gap-3"><span class="h-2.5 w-2.5 rounded-full ${statusDotClass}" aria-hidden="true"></span><h2 class="text-lg font-semibold text-zinc-100">${unavailable ? "Login service unavailable" : title}</h2></div><p class="mt-3 text-sm leading-6 text-zinc-300">${escapeHtml(message)}</p>${metadata}${deviceCode}${browser}${controls}</section>`
 }
 
+const renderAuthPage = (
+	title: string,
+	description: string,
+	content: string,
+): string => `<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<body class="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-6 text-zinc-100"><main class="w-full max-w-lg"><h1 class="text-3xl font-bold tracking-tight">${escapeHtml(title)}</h1><p class="mt-2 text-sm text-zinc-400">${escapeHtml(description)}</p><section class="mt-6 rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl">${content}</section></main></body></html>`
+
+export const renderAdminLoginPage = (csrf: string, notice?: string): string =>
+	renderAuthPage(
+		"Admin sign in",
+		"Sign in to manage OpenAI OAuth credentials and API access.",
+		`${notice ? `<p class="mb-4 text-sm text-red-300" role="alert">${escapeHtml(notice)}</p>` : ""}<form method="post" action="/_admin/login"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label class="block text-sm" for="admin-username">Username</label><input class="mt-2 w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="admin-username" name="username" required autocomplete="username" maxlength="64"><label class="mt-4 block text-sm" for="admin-password">Password</label><input class="mt-2 w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="admin-password" name="password" type="password" required autocomplete="current-password" maxlength="128"><button class="mt-5 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950" type="submit">Sign in</button></form>`,
+	)
+
+export const renderBootstrapPage = (csrf: string, notice?: string): string =>
+	renderAuthPage(
+		"Change bootstrap credentials",
+		"Before using the control panel, replace both deployment-provisioned credentials.",
+		`${notice ? `<p class="mb-4 text-sm text-red-300" role="alert">${escapeHtml(notice)}</p>` : ""}<form method="post" action="/_admin/bootstrap"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><label class="block text-sm" for="new-username">New username</label><input class="mt-2 w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="new-username" name="username" required autocomplete="username" minlength="3" maxlength="64" pattern="[A-Za-z0-9_.]{3,64}"><label class="mt-4 block text-sm" for="current-password">Current password</label><input class="mt-2 w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="current-password" name="currentPassword" type="password" required autocomplete="current-password" maxlength="128"><label class="mt-4 block text-sm" for="new-password">New password</label><input class="mt-2 w-full rounded border border-zinc-600 bg-zinc-950 px-3 py-2 text-sm" id="new-password" name="newPassword" type="password" required autocomplete="new-password" minlength="12" maxlength="128"><button class="mt-5 rounded-lg bg-emerald-400 px-4 py-2 text-sm font-bold text-zinc-950" type="submit">Save credentials</button></form>`,
+	)
+
 export const renderPage = (
 	csrf: string,
 	status?: ControlStatus,
 	unavailable = false,
-): string => `<!doctype html>
+	adminUsername?: string,
+): string => {
+	const adminControls = adminUsername
+		? `<div class="mt-4 flex items-center justify-between gap-4 rounded-lg border border-zinc-800 bg-zinc-900 px-4 py-3"><p class="text-sm text-zinc-300">Signed in as <strong>${escapeHtml(adminUsername)}</strong></p><form method="post" action="/_admin/sign-out"><input type="hidden" name="csrf" value="${escapeHtml(csrf)}"><button class="rounded-lg bg-red-500 px-4 py-2 text-sm font-bold text-white" type="submit">Log out</button></form></div>`
+		: ""
+	const apiKeysPanel = adminUsername
+		? `<section id="api-keys" class="mt-6" hx-get="/_api-keys" hx-trigger="load" hx-swap="outerHTML"><p class="text-sm text-zinc-400">Loading API keys…</p></section>`
+		: ""
+	return `<!doctype html>
 <html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>OpenAI OAuth sign-in</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/htmx.js" defer></script><script src="/assets/hyperscript.js" defer></script><script src="/assets/copy.js" defer></script></head>
-<body class="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-6 text-zinc-100"><main class="w-full max-w-2xl"><h1 class="text-3xl font-bold tracking-tight">OpenAI OAuth sign-in</h1><p class="mt-2 text-sm text-zinc-400">Choose a sign-in method. Your credentials are never shown here.</p><div class="mt-6">${renderStatus(csrf, status, unavailable)}</div><p class="mt-4 text-xs leading-5 text-zinc-500">Never share callback URLs or sign-in codes.</p></main></body></html>`
+<body class="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-6 text-zinc-100"><main class="w-full max-w-2xl"><h1 class="text-3xl font-bold tracking-tight">OpenAI OAuth sign-in</h1><p class="mt-2 text-sm text-zinc-400">OAuth credentials stay server-side. API keys are revealed once when created.</p>${adminControls}<div class="mt-6">${renderStatus(csrf, status, unavailable)}</div>${apiKeysPanel}<p class="mt-4 text-xs leading-5 text-zinc-500">Never share callback URLs or sign-in codes.</p></main></body></html>`
+}

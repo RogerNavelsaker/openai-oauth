@@ -38,7 +38,7 @@ Turn your ChatGPT account into an OpenAI-Compatible API. [Learn more](#dev-proxy
 $ npx openai-oauth@latest
 
 OpenAI-compatible endpoint ready at http://127.0.0.1:10531/v1
-Use this as your OpenAI base URL. No API key is required.
+Use this as your OpenAI base URL. CLI-only mode needs no API key; UI/database mode requires a dashboard-issued bearer key.
 Available Models: gpt-5.6-terra, gpt-5.6-sol, gpt-image-2, ...
 ```
 
