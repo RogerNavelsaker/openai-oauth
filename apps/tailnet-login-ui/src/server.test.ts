@@ -188,8 +188,33 @@ describe("tailnet OAuth login UI", () => {
 			},
 		})
 		expect(fragment).toContain("data-copy-device-code")
-		expect(fragment).toContain(">Copy code</button>")
+		expect(fragment).toContain(">Copy</button>")
+		expect(fragment).toMatch(
+			/<button class="[^"]*bg-sky-400[^"]*" type="button" data-copy-device-code>Copy<\/button>/,
+		)
+		expect(fragment).toMatch(
+			/<button class="[^"]*bg-red-500[^"]*" type="submit">Cancel<\/button>/,
+		)
 		expect(fragment).not.toContain("Toggle code visibility")
+	})
+
+	test("renders browser callback with a muted input and red Cancel button", () => {
+		const fragment = renderStatus("a".repeat(48), {
+			credentialsConfigured: false,
+			login: {
+				id: activeId,
+				state: "awaiting_callback",
+				authorizationUrl: "https://auth.openai.com/oauth/authorize?state=test",
+			},
+		})
+		expect(fragment).toContain('id="callback-url"')
+		expect(fragment).toMatch(
+			/<input class="[^"]*text-zinc-300[^"]*" id="callback-url"/,
+		)
+		expect(fragment).toContain(">Submit callback URL</button>")
+		expect(fragment).toMatch(
+			/<button class="[^"]*bg-red-500[^"]*" type="submit">Cancel<\/button>/,
+		)
 	})
 
 	test("renders credential status and lifecycle controls instead of direct replacement sign-in", () => {
@@ -223,13 +248,28 @@ describe("tailnet OAuth login UI", () => {
 		expect(buttonClasses[1]?.[1]).toContain("bg-red-500")
 		expect(fragment).not.toContain(">Device-code</button>")
 		expect(fragment).not.toContain("hx-confirm=")
+		expect(fragment).toContain("grid-cols-[max-content_minmax(0,1fr)]")
 		expect(fragment).toContain(
-			`Credentials last updated: </dt><dd class="inline">${readableUpdatedAt}`,
+			`Access token updated:</dt><dd class="min-w-0 break-words">${readableUpdatedAt}`,
 		)
 		expect(fragment).toContain(
-			`Access token expiry: </dt><dd class="inline">${readableExpiresAt}`,
+			`Access token expiry:</dt><dd class="min-w-0 break-words">${readableExpiresAt}`,
 		)
 		expect(fragment).toContain("bg-emerald-400")
+	})
+
+	test("shows unavailable token metadata and disables refresh when no refresh token is available", () => {
+		const fragment = renderStatus("a".repeat(48), {
+			credentialsConfigured: true,
+			accessTokenAppearsValid: true,
+			refreshAvailable: false,
+			login: { state: "idle" },
+		})
+		expect(fragment.match(/>Unavailable<\/dd>/g)).toHaveLength(2)
+		expect(fragment).toMatch(
+			/<button class="[^"]*bg-zinc-700[^"]*" type="button" disabled aria-disabled="true">Refresh<\/button>/,
+		)
+		expect(fragment).not.toContain('hx-post="/_refresh"')
 	})
 
 	test("uses red, orange, and green token status colors for lifecycle state", () => {
