@@ -402,6 +402,8 @@ describe("tailnet OAuth login UI", () => {
 		expect(loginHtml).toContain("Admin sign in")
 		expect(loginHtml).not.toContain("Device-code")
 
+		expect(loginPage.headers.get("referrer-policy")).toBe("same-origin")
+		expect(loginHtml).toContain('<meta name="referrer" content="same-origin">')
 		const lockedStart = await globalThis.fetch(`${server.url}/_start`, {
 			method: "POST",
 			headers: {

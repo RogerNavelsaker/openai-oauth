@@ -86,7 +86,7 @@ const securityHeaders = {
 	"Cache-Control": "no-store, private",
 	"Content-Security-Policy":
 		"default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; img-src 'self' data:; form-action 'self'; base-uri 'none'; frame-ancestors 'none'",
-	"Referrer-Policy": "no-referrer",
+	"Referrer-Policy": "same-origin",
 	"X-Content-Type-Options": "nosniff",
 	"X-Frame-Options": "DENY",
 } as const

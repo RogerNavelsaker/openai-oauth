@@ -169,7 +169,7 @@ const renderAuthPage = (
 	description: string,
 	content: string,
 ): string => `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/styles.css"></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="same-origin"><title>${escapeHtml(title)}</title><link rel="stylesheet" href="/assets/styles.css"></head>
 <body class="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-6 text-zinc-100"><main class="w-full max-w-lg"><h1 class="text-3xl font-bold tracking-tight">${escapeHtml(title)}</h1><p class="mt-2 text-sm text-zinc-400">${escapeHtml(description)}</p><section class="mt-6 rounded-xl border border-zinc-800 bg-zinc-900 p-6 shadow-xl">${content}</section></main></body></html>`
 
 export const renderAdminLoginPage = (csrf: string, notice?: string): string =>
@@ -199,6 +199,6 @@ export const renderPage = (
 		? `<section id="api-keys" class="mt-6" hx-get="/_api-keys" hx-trigger="load" hx-swap="outerHTML"><p class="text-sm text-zinc-400">Loading API keys…</p></section>`
 		: ""
 	return `<!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="no-referrer"><title>OpenAI OAuth sign-in</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/htmx.js" defer></script><script src="/assets/hyperscript.js" defer></script><script src="/assets/copy.js" defer></script></head>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><meta name="referrer" content="same-origin"><title>OpenAI OAuth sign-in</title><link rel="stylesheet" href="/assets/styles.css"><script src="/assets/htmx.js" defer></script><script src="/assets/hyperscript.js" defer></script><script src="/assets/copy.js" defer></script></head>
 <body class="flex min-h-screen items-center justify-center bg-zinc-950 px-4 py-6 text-zinc-100"><main class="w-full max-w-2xl"><h1 class="text-3xl font-bold tracking-tight">OpenAI OAuth sign-in</h1><p class="mt-2 text-sm text-zinc-400">OAuth credentials stay server-side. API keys are revealed once when created.</p>${adminControls}<div class="mt-6">${renderStatus(csrf, status, unavailable)}</div>${apiKeysPanel}<p class="mt-4 text-xs leading-5 text-zinc-500">Never share callback URLs or sign-in codes.</p></main></body></html>`
 }
